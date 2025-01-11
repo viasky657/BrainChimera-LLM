@@ -1,2 +1,3 @@
 # BrainChimera-LLM
-Newest Edition of the BrainChimera-LLMProgram
+Newest Edition of the Brain Chimera-LLM Program.
+This is a work in progress attempt at mapping text and training embeddings to a anatomical human brain-like storage into regions defined by MRI scans. Please use caution when using the program. The MRI scans are by different individuals so it will likely not be a one to one copy of a specific person. I am only choosing to use a male MRI scan to avoid potential problems with mixing biological male and female brain scans as both brains have very different region organization and nueral organization which may cause problems with the llm organizing its data properly. It is possible to use this process with a female mri scan to achieve different results so there may need to be additional trials to compare the two more properly.
