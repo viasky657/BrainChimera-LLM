@@ -1495,3 +1495,1895 @@ class ByteLatentTransformer(nn.Module):
                 memory_keys = self.memory.key_embed1.weight  # Get memory keys
                 
                 # Concatenate RNN and memory states
+```python
+                combined_states = torch.cat([
+                    h_states.transpose(0, 1),  # [batch, num_layers, hidden]
+                    memory_keys.unsqueeze(0).expand(h_states.size(1), -1, -1)  # [batch, num_keys, hidden]
+                ], dim=1)
+                
+                # Compute attention scores over combined states
+                attn_scores, _ = self.state_attention(
+                    patch_embed.unsqueeze(0),  # Query: current patch
+                    combined_states,  # Keys: RNN + memory states
+                    combined_states   # Values: RNN + memory states
+                )
+                
+                # Select states based on attention
+                selected_state = (attn_scores @ combined_states).squeeze(0)
+                patches.append(selected_state)
+            else:
+                patches.append(combined_out.squeeze(0))
+            
+            # Update start index for next patch
+            start_idx = i + 1
+                            
+            
+            # Handle case where no patches were created
+            if not patches:
+                patches = [hidden.mean(dim=0)]
+            patches = torch.stack(patches)
+            
+            # Cross attention between bytes and patches
+            hidden, _ = cross_attn(hidden, patches, patches)
+        
+        # Global latent transformer processing
+        latent_states = self.latent_transformer(patches)
+        
+        # Local decoder processing with brain region integration
+        decoder_states = []
+        hidden = byte_embeds
+        
+        # Process through decoder layers with hierarchical brain region integration
+        for layer_idx, (layer, cross_attn) in enumerate(zip(self.local_decoder['transformer'].layers, self.local_decoder['cross_attention'])):
+            # Cross attention with patches
+            hidden, _ = cross_attn(hidden, latent_states, latent_states)
+            
+            # Integrate brain region information if available
+            if brain_regions is not None:
+                # Project text features to each brain region's space based on layer depth
+                region_projections = {}
+                for region, activity in brain_regions.items():
+                    # Early layers focus on low-level features
+                    if layer_idx < len(self.local_decoder['transformer'].layers) // 3:
+                        if region in ['visual', 'sensory_temporal', 'sensory_parietal']:
+                            # Project early layers to sensory regions
+                            region_text = self.region_embeddings[region](hidden[:, :2])
+                    # Middle layers focus on language and semantic processing
+                    elif layer_idx < 2 * len(self.local_decoder['transformer'].layers) // 3:
+                        if region in ['language', 'semantic']:
+                            # Project middle layers to language regions
+                            region_text = self.region_embeddings[region](hidden[:, 2:4])
+                    # Late layers focus on high-level integration
+                    else:
+                        if region in ['memory', 'executive', 'integration']:
+                            # Project late layers to higher-order regions
+                            region_text = self.region_embeddings[region](hidden[:, 4:])
+                    
+                    # Get region-specific attention with activity gating
+                    region_attn, _ = self.region_attention[region](
+                        region_text,
+                        activity.unsqueeze(0),
+                        activity.unsqueeze(0)
+                    )
+                    
+                    # Apply activity-based gating
+                    gate = torch.sigmoid(activity.mean())
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
+                
+                # Fuse region projections with anatomical constraints
+                region_embeds = self._anatomically_constrained_fusion(region_projections)
+                
+                # Integrate region embeddings back into hidden states
+                for region, embed in region_embeds.items():
+                    # Weight based on region's relevance and layer depth
+                    if layer_idx < len(self.local_decoder['transformer'].layers) // 3:
+                        # Early layers: stronger sensory influence
+                        if region in ['visual', 'sensory_temporal', 'sensory_parietal']:
+                            relevance = torch.cosine_similarity(hidden[:, :2], embed, dim=-1)
+                    elif layer_idx < 2 * len(self.local_decoder['transformer'].layers) // 3:
+                        # Middle layers: stronger language influence
+                        if region in ['language', 'semantic']:
+                            relevance = torch.cosine_similarity(hidden[:, 2:4], embed, dim=-1)
+                    else:
+                        # Late layers: stronger high-level influence
+                        if region in ['memory', 'executive', 'integration']:
+                            relevance = torch.cosine_similarity(hidden[:, 4:], embed, dim=-1)
+                    
+                    # Apply temperature scaling and integrate
+                    relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                    hidden = hidden + relevance.unsqueeze(-1) * embed
+            
+            # Transformer layer
+            hidden = layer(hidden)
+            decoder_states.append(hidden)
+        
+        # Predict next byte
+        logits = self.local_decoder['output'](hidden)
+        
+        # FLAME factuality-aware alignment
+        if self.training:
+            # Compute factuality score for self-alignment
+            factuality_score = self._compute_factuality_score(hidden)
+            
+            # Apply factuality-aware loss weighting
+            if self.is_fact_based:  # For fact-based instructions
+                # Use own knowledge (from pre-training) for supervision
+                supervision_weight = factuality_score
+            else:  # For non-fact-based instructions
+                # Use human demonstrations for supervision
+                supervision_weight = 1.0
+                
+            # Scale logits based on factuality alignment
+            logits = logits * supervision_weight.unsqueeze(-1)
+            
+            # Store factuality metrics for monitoring
+            self.factuality_metrics = {
+                'factuality_score': factuality_score.mean().item(),
+                'supervision_weight': supervision_weight.mean().item()
+            }
+        
+        return {
+            'logits': logits,
+            'patches': patches,
+            'latent_states': latent_states,
+            'encoder_states': encoder_states,
+            'decoder_states': decoder_states,
+            'entropy': entropy,
+            'patch_boundaries': patch_boundaries,
+            'factuality_metrics': getattr(self, 'factuality_metrics', None)
+        }
+        
+    def _compute_factuality_score(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Compute factuality score for self-alignment using FLAME approach"""
+        # Project hidden states to factuality space
+        factuality_hidden = self.factuality_projection(hidden)
+        
+        # Compute attention-based factuality scores
+        scores, _ = self.factuality_attention(
+            factuality_hidden, factuality_hidden, factuality_hidden
+        )
+        
+        # Aggregate scores across attention heads
+        scores = scores.mean(dim=1)  # Average across heads
+        
+        # Apply temperature scaling
+        scores = torch.sigmoid(scores / self.factuality_temperature)
+        
+        return scores
+
+class EntropyBasedTokenizer(HierarchicalTokenizer):
+    """Extends hierarchical tokenizer with entropy-based patching"""
+    def __init__(self, config):
+        super().__init__(config)
+        
+        # Entropy model for dynamic patching
+        self.entropy_model = EntropyModel(config)
+        
+        # Entropy thresholds
+        self.global_threshold = config.entropy_threshold
+        self.relative_threshold = config.relative_threshold
+        
+        # Context window for entropy estimation
+        self.context_window = config.window_size
+        
+    def compute_patch_boundaries(self, bytes_tensor: torch.Tensor) -> torch.Tensor:
+        """Find patch boundaries based on entropy"""
+        # Get entropy estimates
+        with torch.no_grad():
+            entropies = self.entropy_model(bytes_tensor)
+        
+        # Find boundaries using global threshold
+        global_boundaries = entropies > self.global_threshold
+        
+        # Find boundaries using relative threshold
+        entropy_diff = entropies[1:] - entropies[:-1]
+        relative_boundaries = torch.zeros_like(entropies, dtype=torch.bool)
+        relative_boundaries[1:] = entropy_diff > self.relative_threshold
+        
+        # Combine boundary methods
+        boundaries = global_boundaries | relative_boundaries
+        
+        return boundaries
+        
+    def create_patches(self, bytes_tensor: torch.Tensor) -> List[torch.Tensor]:
+        """Create patches based on entropy boundaries"""
+        boundaries = self.compute_patch_boundaries(bytes_tensor)
+        
+        # Split into patches
+        patches = []
+        start_idx = 0
+        
+        for i, is_boundary in enumerate(boundaries):
+            if is_boundary or i == len(boundaries) - 1:
+                # Enforce min/max patch sizes
+                if i + 1 - start_idx >= self.config.min_patch_size:
+                    patch = bytes_tensor[start_idx:i+1]
+                    if len(patch) <= self.config.max_patch_size:
+                        patches.append(patch)
+                        start_idx = i + 1
+                
+        return patches
+
+    def tokenize(self, text: str) -> Dict[str, torch.Tensor]:
+        """Override tokenize to use entropy-based patching"""
+        # Get base hierarchical tokenization
+        tokens = super().tokenize(text)
+        
+        # Add entropy-based patches
+        bytes_tensor = tokens['bytes']
+        patches = self.create_patches(bytes_tensor)
+        
+        # Convert patches to tensor
+        max_patch_size = max(len(p) for p in patches)
+        padded_patches = torch.zeros(len(patches), max_patch_size, dtype=torch.long)
+        for i, patch in enumerate(patches):
+            padded_patches[i, :len(patch)] = patch
+            
+        tokens['entropy_patches'] = padded_patches
+        
+        return tokens
+
+class HierarchicalTokenizer:
+    """Hierarchical tokenizer that builds from bytes to higher-level structures"""
+    def __init__(self, config):
+        self.config = config
+        self.byte_vocab_size = 256
+        self.char_vocab_size = 128  # ASCII
+        self.word_vocab_size = config.hash_vocab_size
+        self.sentence_vocab_size = config.hash_vocab_size
+        self.paragraph_vocab_size = config.hash_vocab_size
+        
+        # Byte to char mappings
+        self.byte_to_char = {i: chr(i) for i in range(128)}
+        
+        # Hash functions for higher levels
+        self.word_hash = lambda x: hash(x) % self.word_vocab_size
+        self.sent_hash = lambda x: hash(x) % self.sentence_vocab_size
+        self.para_hash = lambda x: hash(x) % self.paragraph_vocab_size
+        
+        # Embeddings for each level
+        self.byte_embeddings = nn.Embedding(self.byte_vocab_size, config.d_model)
+        self.char_embeddings = nn.Embedding(self.char_vocab_size, config.d_model) 
+        self.word_embeddings = nn.Embedding(self.word_vocab_size, config.d_model)
+        self.sent_embeddings = nn.Embedding(self.sentence_vocab_size, config.d_model)
+        self.para_embeddings = nn.Embedding(self.paragraph_vocab_size, config.d_model)
+        
+        # Hierarchical positional encodings
+        self.level_embeddings = nn.Embedding(5, config.d_model)  # 5 levels
+        self.relative_pos_embeddings = nn.ModuleDict({
+            level: nn.Embedding(2 * config.window_size - 1, config.d_model)
+            for level in ['bytes', 'chars', 'words', 'sentences', 'paragraphs']
+        })
+        self.hierarchical_pos_mlp = nn.Sequential(
+            nn.Linear(3 * config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, config.d_model)
+        )
+
+    def tokenize(self, text: str) -> Dict[str, torch.Tensor]:
+        """Tokenize text into hierarchical levels"""
+        # Convert to bytes
+        bytes_tensor = torch.tensor([ord(c) for c in text])
+        
+        # Group into chars (ASCII)
+        chars = []
+        for b in bytes_tensor:
+            if b < 128:  # ASCII range
+                chars.append(self.byte_to_char[b.item()])
+        chars_tensor = torch.tensor([ord(c) for c in chars])
+        
+        # Group into words
+        words = ''.join([self.byte_to_char[b.item()] for b in bytes_tensor]).split()
+        words_tensor = torch.tensor([self.word_hash(w) for w in words])
+        
+        # Group into sentences (split on ., !, ?)
+        sents = []
+        curr_sent = []
+        for w in words:
+            curr_sent.append(w)
+            if w[-1] in '.!?':
+                sents.append(' '.join(curr_sent))
+                curr_sent = []
+        if curr_sent:
+            sents.append(' '.join(curr_sent))
+        sents_tensor = torch.tensor([self.sent_hash(s) for s in sents])
+        
+        # Group into paragraphs (split on newlines)
+        paras = ' '.join(sents).split('\n')
+        paras_tensor = torch.tensor([self.para_hash(p) for p in paras])
+        
+        return {
+            'bytes': bytes_tensor,
+            'chars': chars_tensor, 
+```python
+            'words': words_tensor,
+            'sentences': sents_tensor,
+            'paragraphs': paras_tensor
+        }
+
+    def embed(self, tokens: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Get embeddings for each hierarchical level"""
+        return {
+            'bytes': self.byte_embeddings(tokens['bytes']),
+            'chars': self.char_embeddings(tokens['chars']),
+            'words': self.word_embeddings(tokens['words']), 
+            'sentences': self.sent_embeddings(tokens['sentences']),
+            'paragraphs': self.para_embeddings(tokens['paragraphs'])
+        }
+
+class BrainRegionMapper:
+    """Maps brain regions to hierarchical text representations based on fMRI activity"""
+    def __init__(self, config):
+        self.config = config
+        
+        # Define brain regions and their functions from BrainLM paper
+        self.regions = {
+            'visual': {
+                'levels': ['bytes', 'chars'],  # Low-level visual features
+                'mni_coords': [(25, -80, 5), (-25, -80, 5)],  # V1/V2 coordinates
+                'activity_threshold': 0.6,
+                'functions': ['pattern recognition', 'feature detection']
+            },
+            'language': {
+                'levels': ['words', 'sentences'],  # Language processing
+                'mni_coords': [
+                    (45, 15, 15),   # Broca's area (left)
+                    (-45, 15, 15),  # Wernicke's area (left)
+                    (50, -55, 25),  # Angular gyrus (left)
+                    (-50, -55, 25)  # Angular gyrus (right)
+                ],
+                'activity_threshold': 0.7,
+                'functions': ['semantic processing', 'syntax', 'comprehension']
+            },
+            'memory': {
+                'levels': ['paragraphs'],  # Long-term memory and context
+                'mni_coords': [
+                    (30, -20, -10),  # Hippocampus (left)
+                    (-30, -20, -10), # Hippocampus (right)
+                    (35, -40, -15),  # Parahippocampal (left)
+                    (-35, -40, -15)  # Parahippocampal (right)
+                ],
+                'activity_threshold': 0.65,
+                'functions': ['episodic memory', 'contextual binding']
+            },
+            'attention': {
+                'levels': ['sentences', 'paragraphs'],  # Attention and control
+                'mni_coords': [
+                    (35, 45, 30),   # DLPFC (left)
+                    (-35, 45, 30),  # DLPFC (right)
+                    (40, 30, 45),   # Frontal eye fields
+                    (-40, 30, 45)   # Frontal eye fields
+                ],
+                'activity_threshold': 0.75,
+                'functions': ['selective attention', 'cognitive control']
+            },
+            'executive': {
+                'levels': ['paragraphs'],  # High-level planning
+                'mni_coords': [
+                    (40, 35, 30),   # Anterior PFC (left)
+                    (-40, 35, 30),  # Anterior PFC (right)
+                    (45, 40, 35),   # Frontopolar cortex
+                    (-45, 40, 35)   # Frontopolar cortex
+                ],
+                'activity_threshold': 0.8,
+                'functions': ['planning', 'reasoning', 'abstraction']
+            },
+            'semantic': {
+                'levels': ['words', 'sentences'],  # Meaning and concepts
+                'mni_coords': [
+                    (55, -45, -15),  # Temporal pole (left)
+                    (-55, -45, -15), # Temporal pole (right)
+                    (50, -35, -5),   # Inferior temporal
+                    (-50, -35, -5)   # Inferior temporal
+                ],
+                'activity_threshold': 0.7,
+                'functions': ['semantic memory', 'concept representation']
+            },
+            'integration': {
+                'levels': ['sentences', 'paragraphs'],  # Information integration
+                'mni_coords': [
+                    (45, -60, 35),  # Angular gyrus (left)
+                    (-45, -60, 35), # Angular gyrus (right)
+                    (40, -65, 40),  # Posterior parietal
+                    (-40, -65, 40)  # Posterior parietal
+                ],
+                'activity_threshold': 0.75,
+                'functions': ['multimodal integration', 'abstraction']
+            },
+            'sensory_temporal': {
+                'levels': ['words', 'sentences'],  # Sensory processing in temporal lobe
+                'mni_coords': [
+                    (40, -15, -20),  # Superior temporal gyrus (left)
+                    (-40, -15, -20), # Superior temporal gyrus (right)
+                    (45, -25, -15),  # Middle temporal gyrus (left)
+                    (-45, -25, -15)  # Middle temporal gyrus (right)
+                ],
+                'activity_threshold': 0.65,
+                'functions': ['taste processing', 'smell processing', 'auditory integration']
+            },
+            'sensory_parietal': {
+                'levels': ['words', 'sentences'],  # Sensory processing in parietal lobe
+                'mni_coords': [
+                    (35, -30, 50),   # Primary somatosensory cortex (left)
+                    (-35, -30, 50),  # Primary somatosensory cortex (right)
+                    (40, -35, 55),   # Secondary somatosensory cortex (left)
+                    (-40, -35, 55)   # Secondary somatosensory cortex (right)
+                ],
+                'activity_threshold': 0.65,
+                'functions': ['tactile processing', 'proprioception', 'sensory integration']
+            }
+        }
+        
+        # Embeddings and projections for each region
+        self.region_embeddings = nn.ModuleDict({
+            region: nn.Linear(config.d_model, config.region_dim)
+            for region in self.regions.keys()
+        })
+        
+        # fMRI activity projections
+        self.fmri_projections = nn.ModuleDict({
+            region: nn.Sequential(
+                nn.Linear(len(coords), config.region_dim),
+                nn.LayerNorm(config.region_dim),
+                nn.ReLU(),
+                nn.Linear(config.region_dim, config.region_dim)
+            )
+            for region, info in self.regions.items()
+            for coords in [info['mni_coords']]
+        })
+        
+        # Region-specific attention for activity-guided mapping
+        self.region_attention = nn.ModuleDict({
+            region: nn.MultiheadAttention(
+                config.region_dim,
+                num_heads=4,
+                dropout=config.dropout,
+                batch_first=True
+            )
+            for region in self.regions.keys()
+        })
+        
+        # Cross-attention for region fusion
+        self.region_fusion = CrossModalFusion(
+            config.region_dim,
+            config.n_heads,
+            config.dropout,
+            len(self.regions)
+        )
+
+    def map_to_regions(self,
+                      text_embeds: Dict[str, torch.Tensor],
+                      fmri_data: Optional[torch.Tensor] = None
+                      ) -> Dict[str, torch.Tensor]:
+        """Map hierarchical text embeddings to brain regions guided by fMRI activity"""
+        region_embeds = {}
+        
+        # Process each brain region
+        for region, info in self.regions.items():
+            # Get text embeddings for this region's levels
+            region_text = torch.stack([
+                text_embeds[level].mean(0) for level in info['levels']
+            ]).mean(0)
+            
+            # Project text to region space
+            region_text_embed = self.region_embeddings[region](region_text)
+            
+            if fmri_data is not None:
+                # Extract fMRI activity for this region's coordinates
+                region_activity = self._extract_region_activity(
+                    fmri_data, 
+                    info['mni_coords'],
+                    info['activity_threshold']
+                )
+                
+                # Project fMRI activity to embedding space
+                region_fmri_embed = self.fmri_projections[region](region_activity)
+                
+                # Attention-guided fusion of text and fMRI
+                region_embed, _ = self.region_attention[region](
+                    region_text_embed.unsqueeze(0),
+                    region_fmri_embed.unsqueeze(0),
+                    region_fmri_embed.unsqueeze(0)
+                )
+                region_embed = region_embed.squeeze(0)
+                
+                # Apply activity-based gating
+                gate = torch.sigmoid(region_activity.mean())
+                region_embed = gate * region_embed + (1 - gate) * region_text_embed
+            else:
+                region_embed = region_text_embed
+            
+            region_embeds[region] = region_embed
+        
+        # Cross-region fusion with anatomical constraints
+        region_embeds = self._anatomically_constrained_fusion(region_embeds)
+        
+        return region_embeds
+        
+    def _extract_region_activity(
+        self,
+        fmri_data: torch.Tensor,
+        coords: List[Tuple[int, int, int]],
+        threshold: float
+    ) -> torch.Tensor:
+        """Extract and normalize fMRI activity for given coordinates"""
+        # Extract activity from coordinates
+        region_activity = []
+        for x, y, z in coords:
+            # Get activity at coordinate
+            activity = fmri_data[..., x, y, z]
+            region_activity.append(activity)
+        
+        # Stack and normalize
+        region_activity = torch.stack(region_activity, dim=-1)
+        region_activity = torch.nn.functional.normalize(region_activity, dim=-1)
+        
+        # Apply threshold
+        region_activity = region_activity * (region_activity > threshold).float()
+        
+        return region_activity
+        
+    def _anatomically_constrained_fusion(
+        self,
+        region_embeds: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Fuse region embeddings while respecting anatomical constraints"""
+        # Define anatomical constraints from BrainLM paper
+        adjacency = {
+            'visual': ['semantic', 'integration'],  # Visual to semantic pathway
+            'language': ['semantic', 'memory', 'integration', 'sensory_temporal'],  # Language processing pathway
+            'memory': ['language', 'executive', 'integration', 'sensory_temporal'],  # Memory consolidation
+            'attention': ['executive', 'integration', 'sensory_parietal'],  # Attention control
+            'executive': ['memory', 'attention', 'integration'],  # Executive control
+            'semantic': ['visual', 'language', 'integration', 'sensory_temporal'],  # Semantic processing
+            'integration': ['visual', 'language', 'memory', 'attention', 'executive', 'semantic', 'sensory_temporal', 'sensory_parietal'],  # Integration hub
+            'sensory_temporal': ['language', 'semantic', 'memory', 'integration'],  # Temporal lobe sensory processing
+            'sensory_parietal': ['attention', 'integration']  # Parietal lobe sensory processing
+        }
+        
+        # Constrained fusion
+        fused_embeds = {}
+        for region in region_embeds:
+            # Get adjacent regions
+            adjacent = adjacency[region]
+            
+            # Weighted sum with adjacent regions
+            region_embed = region_embeds[region]
+            for adj_region in adjacent:
+                if adj_region in region_embeds:
+                    # Weight based on anatomical distance
+                    weight = self._compute_anatomical_weight(region, adj_region)
+                    region_embed = region_embed + weight * region_embeds[adj_region]
+            
+            fused_embeds[region] = region_embed
+            
+        return fused_embeds
+        
+    def _compute_anatomical_weight(
+        self,
+        region1: str,
+        region2: str
+    ) -> float:
+        """Compute weight based on anatomical distance and functional connectivity from BrainLM paper"""
+        # Get all coordinates for both regions
+        coords1 = self.regions[region1]['mni_coords']
+        coords2 = self.regions[region2]['mni_coords']
+        
+        # Compute minimum distance between any pair of coordinates
+        min_distance = float('inf')
+        for c1 in coords1:
+            for c2 in coords2:
+                distance = sum((x1 - x2) ** 2 for x1, x2 in zip(c1, c2)) ** 0.5
+                min_distance = min(min_distance, distance)
+        
+        # Base weight on distance (closer = higher weight)
+        distance_weight = 1.0 / (1.0 + min_distance / 50.0)  # 50mm normalization factor
+        
+        # Additional weighting based on functional pathways from BrainLM paper
+        pathway_weights = {
+            ('visual', 'semantic'): 1.2,      # Strong visual-semantic pathway
+            ('semantic', 'language'): 1.2,    # Strong semantic-language pathway
+            ('language', 'memory'): 1.1,      # Language-memory integration
+            ('memory', 'executive'): 1.1,     # Memory-executive control
+            ('attention', 'executive'): 1.2,  # Strong attention-executive pathway
+            ('integration', 'semantic'): 1.1, # Integration with semantics
+            ('integration', 'memory'): 1.1,   # Integration with memory
+            ('integration', 'executive'): 1.1, # Integration with control
+            
+            # Sensory temporal pathways
+            ('sensory_temporal', 'language'): 1.2,  # Strong connection for taste/smell/sound processing
+            ('sensory_temporal', 'semantic'): 1.2,  # Strong semantic integration of sensory information
+            ('sensory_temporal', 'memory'): 1.1,    # Memory integration of sensory experiences
+            ('integration', 'sensory_temporal'): 1.1, # Integration of temporal sensory information
+            
+            # Sensory parietal pathways  
+            ('sensory_parietal', 'attention'): 1.2,  # Strong connection for tactile attention
+            ('sensory_parietal', 'executive'): 1.1,  # Executive control of tactile processing
+            ('integration', 'sensory_parietal'): 1.1  # Integration of parietal sensory information
+        }
+        
+        # Get pathway weight if it exists (in either direction)
+        pathway_weight = pathway_weights.get(
+            (region1, region2),
+            pathway_weights.get((region2, region1), 1.0)
+        )
+        
+        # Combine distance and pathway weights
+        weight = distance_weight * pathway_weight
+        
+        # Additional boost for integration region connections
+        if 'integration' in (region1, region2):
+            weight *= 1.1  # 10% boost for integration pathways
+            
+        return weight
+
+class MultimodalBrainAwareDataset(Dataset):
+    """Dataset for multimodal brain data with hierarchical structure and fMRI integration"""
+    def __init__(
+        self,
+        text_data,
+        fmri_data,
+        config: TrainingConfig,
+        augment_prob: float = 0.5,  # Probability of applying augmentation
+        mask_prob: float = 0.15,  # Probability of masking tokens
+        fmri_window: int = 200,  # Time window for fMRI samples (from paper)
+        fmri_patch_size: int = 20,  # Patch size for temporal signals (from paper)
+        n_parcels: int = 424  # Number of parcels for fMRI compression (from paper)
+    ):
+        self.text_data = text_data
+        self.fmri_data = fmri_data
+        self.config = config
+        self.augment_prob = augment_prob
+        self.mask_prob = mask_prob
+        self.fmri_window = fmri_window
+        self.fmri_patch_size = fmri_patch_size
+        self.n_parcels = n_parcels
+        
+        # fMRI processing components
+        self.fmri_compressor = nn.Linear(fmri_data.shape[-1], n_parcels) if fmri_data is not None else None
+        self.temporal_embeddings = nn.Parameter(torch.randn(fmri_window, config.d_model))
+        self.spatial_embeddings = nn.Parameter(torch.randn(n_parcels, config.d_model))
+        self.patch_projection = nn.Linear(fmri_patch_size, config.d_model)
+        
+        # Initialize factuality components
+        self.factuality_reward = FactualityRewardModel(config)
+        self.is_fact_based = False  # Will be set during training
+        
+        # Initialize fMRI encoder/decoder
+        if fmri_data is not None:
+            self.fmri_encoder = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    dim_feedforward=config.d_model * 4,
+                    dropout=config.dropout,
+                    batch_first=True
+                ),
+                num_layers=config.encoder_layers
+            )
+            
+            self.fmri_decoder = nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    dim_feedforward=config.d_model * 4,
+                    dropout=config.dropout,
+                    batch_first=True
+                ),
+                num_layers=config.decoder_layers
+            )
+        
+        # Special tokens
+        self.mask_token = config.mask_token
+        self.pad_token = config.pad_token
+        
+        # Hierarchical masking strategies
+        self.masking_strategies = {
+            'bytes': self._mask_bytes,
+            'chars': self._mask_chars,
+            'words': self._mask_words,
+            'sentences': self._mask_sentences,
+            'paragraphs': self._mask_paragraphs
+        }
+        
+        # Level-specific masking probabilities
+        self.level_mask_probs = {
+            'bytes': 0.15,      # More frequent masking at lower levels
+            'chars': 0.15,
+            'words': 0.12,
+            'sentences': 0.10,
+            'paragraphs': 0.08  # Less frequent masking at higher levels
+        }
+        
+        # Cross-level masking probabilities
+        self.cross_level_mask_prob = 0.05  # Probability of masking corresponding tokens
+        
+        # Use entropy-based tokenizer for hierarchical processing
+        self.tokenizer = EntropyBasedTokenizer(config)
+        
+        # Brain region mapper
+        self.region_mapper = BrainRegionMapper(config)
+        
+        
+        # Hierarchical augmentation methods
+        self.byte_augmentations = [
+            self._byte_substitution,
+            self._byte_insertion,
+            self._byte_deletion
+        ]
+        
+        self.char_augmentations = [
+            self._char_substitution,
+            self._char_swapping,
+            self._char_deletion
+        ]
+        
+        self.word_augmentations = [
+            self._word_substitution,
+            self._word_insertion,
+            self._word_deletion,
+            self._word_shuffling
+        ]
+        
+        self.sentence_augmentations = [
+            self._sentence_paraphrase,
+            self._sentence_splitting,
+            self._sentence_combination
+        ]
+        
+        self.paragraph_augmentations = [
+            self._paragraph_restructuring,
+            self._paragraph_summarization,
+            self._paragraph_expansion
+        ]
+
+    
+    def _apply_hierarchical_augmentation(
+        self,
+        text: str,
+        fmri: Optional[torch.Tensor] = None
+    ) -> Tuple[str, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Apply hierarchical data augmentation"""
+        if torch.rand(1).item() > self.augment_prob:
+            return text, fmri
+            
+        # Text augmentation
+        # 1. Byte-level
+        if torch.rand(1).item() < 0.2:  # 20% chance
+            aug_fn = torch.randint(0, len(self.byte_augmentations), (1,)).item()
+            text = self.byte_augmentations[aug_fn](text)
+        
+        # 2. Character-level
+        if torch.rand(1).item() < 0.3:  # 30% chance
+            aug_fn = torch.randint(0, len(self.char_augmentations), (1,)).item()
+            text = self.char_augmentations[aug_fn](text)
+        
+        # 3. Word-level
+        if torch.rand(1).item() < 0.4:  # 40% chance
+            aug_fn = torch.randint(0, len(self.word_augmentations), (1,)).item()
+            text = self.word_augmentations[aug_fn](text)
+        
+        # 4. Sentence-level
+        if torch.rand(1).item() < 0.3:  # 30% chance
+            aug_fn = torch.randint(0, len(self.sentence_augmentations), (1,)).item()
+            text = self.sentence_augmentations[aug_fn](text)
+        
+        # 5. Paragraph-level
+        if torch.rand(1).item() < 0.2:  # 20% chance
+            aug_fn = torch.randint(0, len(self.paragraph_augmentations), (1,)).item()
+            text = self.paragraph_augmentations[aug_fn](text)
+        
+        return text, fmri
+    
+    # Byte-level augmentations
+    def _byte_substitution(self, text: str) -> str:
+        """Randomly substitute bytes"""
+        bytes_list = list(text.encode())
+        for i in range(len(bytes_list)):
+            if torch.rand(1).item() < 0.1:  # 10% chance per byte
+                bytes_list[i] = torch.randint(0, 256, (1,)).item()
+        return bytes(bytes_list).decode(errors='ignore')
+    
+    def _byte_insertion(self, text: str) -> str:
+        """Insert random bytes"""
+        bytes_list = list(text.encode())
+        for i in range(len(bytes_list)):
+            if torch.rand(1).item() < 0.05:  # 5% chance per position
+                bytes_list.insert(i, torch.randint(0, 256, (1,)).item())
+        return bytes(bytes_list).decode(errors='ignore')
+    
+    def _byte_deletion(self, text: str) -> str:
+        """Delete random bytes"""
+        bytes_list = list(text.encode())
+        return bytes([b for b in bytes_list if torch.rand(1).item() > 0.05]).decode(errors='ignore')
+    
+    # Character-level augmentations
+    def _char_substitution(self, text: str) -> str:
+        """Substitute characters with similar ones"""
+        char_map = {
+            'a': 'áàâä', 'e': 'éèêë', 'i': 'íìîï',
+            'o': 'óòôö', 'u': 'úùûü', 'n': 'ñ'
+        }
+        result = ''
+        for c in text:
+            if c.lower() in char_map and torch.rand(1).item() < 0.1:
+                options = char_map[c.lower()]
+                result += options[torch.randint(0, len(options), (1,)).item()]
+            else:
+                result += c
+        return result
+    
+    def _char_swapping(self, text: str) -> str:
+        """Swap adjacent characters"""
+        chars = list(text)
+        for i in range(len(chars)-1):
+            if torch.rand(1).item() < 0.1:
+                chars[i], chars[i+1] = chars[i+1], chars[i]
+        return ''.join(chars)
+    
+    def _char_deletion(self, text: str) -> str:
+        """Delete random characters"""
+        return ''.join(c for c in text if torch.rand(1).item() > 0.05)
+    
+    # Word-level augmentations
+    def _word_substitution(self, text: str) -> str:
+        """Substitute words with synonyms"""
+        # Simple synonym map (expand this with a proper synonym database)
+        synonyms = {
+            'happy': ['joyful', 'glad', 'pleased'],
+            'sad': ['unhappy', 'depressed', 'down'],
+            'big': ['large', 'huge', 'enormous']
+        }
+        words = text.split()
+        for i, word in enumerate(words):
+            if word.lower() in synonyms and torch.rand(1).item() < 0.2:
+                options = synonyms[word.lower()]
+                words[i] = options[torch.randint(0, len(options), (1,)).item()]
+        return ' '.join(words)
+    
+    def _word_insertion(self, text: str) -> str:
+        """Insert common words"""
+        common_words = ['the', 'a', 'an', 'and', 'or', 'but']
+        words = text.split()
+        for i in range(len(words)):
+            if torch.rand(1).item() < 0.1:
+                words.insert(i, common_words[torch.randint(0, len(common_words), (1,)).item()])
+        return ' '.join(words)
+    
+    def _word_deletion(self, text: str) -> str:
+        """Delete random words"""
+        words = text.split()
+        return ' '.join(w for w in words if torch.rand(1).item() > 0.1)
+    
+    def _word_shuffling(self, text: str) -> str:
+        """Shuffle words while preserving some local order"""
+        words = text.split()
+        for i in range(0, len(words)-2, 2):
+            if torch.rand(1).item() < 0.2:
+                words[i], words[i+1] = words[i+1], words[i]
+        return ' '.join(words)
+    
+    # Sentence-level augmentations
+    def _sentence_paraphrase(self, text: str) -> str:
+        """Simple rule-based paraphrasing"""
+        # Add basic paraphrasing rules (expand this)
+        patterns = [
+            ('I am', "I'm"),
+            ('They are', "They're"),
+            ('will not', "won't"),
+            ('cannot', "can't")
+        ]
+        for original, replacement in patterns:
+            if torch.rand(1).item() < 0.3:
+                text = text.replace(original, replacement)
+        return text
+    
+    def _sentence_splitting(self, text: str) -> str:
+        """Split long sentences"""
+        sentences = text.split('. ')
+        result = []
+        for sent in sentences:
+            if len(sent.split()) > 10 and torch.rand(1).item() < 0.3:
+                words = sent.split()
+                mid = len(words) // 2
+                result.append(' '.join(words[:mid]) + '.')
+                result.append(' '.join(words[mid:]) + '.')
+            else:
+                result.append(sent + '.')
+        return ' '.join(result)
+    
+    def _sentence_combination(self, text: str) -> str:
+        """Combine short sentences"""
+        sentences = text.split('. ')
+        result = []
+        i = 0
+        while i < len(sentences):
+            if i < len(sentences)-1 and len(sentences[i].split()) < 5 and len(sentences[i+1].split()) < 5 and torch.rand(1).item() < 0.3:
+                result.append(sentences[i] + ' and ' + sentences[i+1] + '.')
+                i += 2
+            else:
+                result.append(sentences[i] + '.')
+                i += 1
+        return ' '.join(result)
+    
+    # Paragraph-level augmentations
+    def _paragraph_restructuring(self, text: str) -> str:
+        """Restructure paragraphs"""
+        paragraphs = text.split('\n\n')
+        if len(paragraphs) > 1:
+            # Randomly swap paragraphs
+            for i in range(len(paragraphs)-1):
+                if torch.rand(1).item() < 0.2:
+                    paragraphs[i], paragraphs[i+1] = paragraphs[i+1], paragraphs[i]
+        return '\n\n'.join(paragraphs)
+    
+    def _paragraph_summarization(self, text: str) -> str:
+        """Simple extractive summarization"""
+        paragraphs = text.split('\n\n')
+        result = []
+        for para in paragraphs:
+            sentences = para.split('. ')
+            if len(sentences) > 3 and torch.rand(1).item() < 0.2:
+                # Keep first and last sentences, and a random middle one
+                middle_idx = torch.randint(1, len(sentences)-1, (1,)).item()
+                selected = [sentences[0], sentences[middle_idx], sentences[-1]]
+                result.append('. '.join(selected) + '.')
+            else:
+                result.append(para)
+        return '\n\n'.join(result)
+    
+    def _paragraph_expansion(self, text: str) -> str:
+        """Expand paragraphs with common phrases"""
+        common_phrases = [
+            'In other words,',
+            'For example,',
+            'Additionally,',
+            'Furthermore,',
+            'Moreover,'
+        ]
+        paragraphs = text.split('\n\n')
+        result = []
+        for para in paragraphs:
+            if torch.rand(1).item() < 0.2:
+                phrase = common_phrases[torch.randint(0, len(common_phrases), (1,)).item()]
+                sentences = para.split('. ')
+                insert_idx = torch.randint(0, len(sentences), (1,)).item()
+                sentences.insert(insert_idx, phrase)
+                result.append('. '.join(sentences))
+            else:
+                result.append(para)
+        return '\n\n'.join(result)
+
+    def __len__(self):
+        return len(self.text_data)
+
+    def __getitem__(self, idx):
+        # Get raw data
+        text = self.text_data[idx]
+        
+        # Process fMRI data if available
+        if self.fmri_data is not None:
+            # Get fMRI data and compress to parcels
+            fmri = self.fmri_data[idx]
+            fmri = self.fmri_compressor(fmri)  # [time, n_parcels]
+            
+            # Randomly trim to window size
+            if fmri.size(0) > self.fmri_window:
+                start_idx = torch.randint(0, fmri.size(0) - self.fmri_window, (1,))
+                fmri = fmri[start_idx:start_idx + self.fmri_window]
+            
+            # Split temporal signals into patches
+            n_patches = self.fmri_window // self.fmri_patch_size
+            fmri_patches = fmri.unfold(0, self.fmri_patch_size, self.fmri_patch_size)
+            fmri_patches = fmri_patches.transpose(1, 2)  # [n_patches, patch_size, n_parcels]
+            
+            # Project patches to token space
+            fmri_tokens = self.patch_projection(fmri_patches)  # [n_patches, n_parcels, d_model]
+            
+            # Add spatial and temporal embeddings
+            positions = torch.arange(n_patches).unsqueeze(-1) * self.fmri_patch_size
+            fmri_tokens = fmri_tokens + self.temporal_embeddings[positions]
+            fmri_tokens = fmri_tokens + self.spatial_embeddings.unsqueeze(0)
+            
+            # Apply masking if needed
+            if torch.rand(1).item() < self.mask_prob:
+                mask = torch.rand(fmri_tokens.size(0)) < self.mask_prob
+                fmri_tokens_masked = fmri_tokens.clone()
+                fmri_tokens_masked[mask] = 0
+                
+                # Encode visible tokens
+                encoded = self.fmri_encoder(fmri_tokens_masked)
+                
+                # Decode full sequence
+                decoded = self.fmri_decoder(fmri_tokens, encoded)
+                # Compute reconstruction loss only for masked tokens
+                recon_loss = nn.MSELoss()(decoded[mask], fmri_tokens[mask])
+            else:
+                fmri_tokens_masked = fmri_tokens
+                encoded = self.fmri_encoder(fmri_tokens)
+                decoded = self.fmri_decoder(fmri_tokens, encoded)
+                recon_loss = nn.MSELoss()(decoded, fmri_tokens)
+        else:
+            fmri = None
+            fmri_tokens = None
+            fmri_tokens_masked = None
+            encoded = None
+            decoded = None
+            recon_loss = 0.0
+```python
+            0.0
+        
+        # Hierarchical tokenization
+        tokens = self.tokenizer.tokenize(text)
+        token_embeds = self.tokenizer.embed(tokens)
+        
+        # Map to brain regions using processed fMRI
+        region_embeds = self.region_mapper.map_to_regions(
+            token_embeds, fmri_tokens if fmri is not None else None
+        )
+        
+        return {
+            'tokens': tokens,
+            'token_embeds': token_embeds,
+            'region_embeds': region_embeds,
+            'fmri': fmri,
+            'fmri_tokens': fmri_tokens,
+            'fmri_tokens_masked': fmri_tokens_masked,
+            'fmri_encoded': encoded,
+            'fmri_decoded': decoded,
+            'fmri_recon_loss': recon_loss
+        }
+
+class TrainingConfig:
+    """Configuration for training"""
+    def __init__(
+        self,
+        batch_size: int = 32,
+        num_workers: int = 4,
+        learning_rate: float = 1e-4,
+        num_epochs: int = 100,
+        distillation_config: Optional[Dict[str, Any]] = {
+            'enabled': True,
+            'temperature': 2.0,        # Temperature for softening distributions
+            'alpha': 0.5,              # Weight for distillation loss
+            'hierarchical_temp': {     # Level-specific temperatures
+                'bytes': 1.0,          # Sharper for low-level features
+                'chars': 1.5,
+                'words': 2.0,
+                'sentences': 2.5,
+                'paragraphs': 3.0      # Softer for high-level features
+            },
+            'feature_matching': {      # Feature-level distillation
+                'enabled': True,
+                'layers': ['hidden', 'attention', 'ffn'],
+                'weight': 0.1
+            },
+            'attention_transfer': {    # Attention-based transfer
+                'enabled': True,
+                'weight': 0.1,
+                'types': ['self', 'cross']
+            },
+            'progressive_stages': {    # Progressive knowledge transfer
+                'freeze_lower': True,  # Freeze lower levels while training higher
+                'unfreeze_ratio': 0.2  # Ratio of training to start unfreezing
+            },
+            'level_specific': {        # Level-specific distillation settings
+                'bytes_to_chars': {
+                    'weight': 1.0,
+                    'features': ['hidden', 'attention'],
+                    'temp': 1.5
+                },
+                'chars_to_words': {
+                    'weight': 0.8,
+                    'features': ['hidden', 'attention'],
+                    'temp': 2.0
+                },
+                'words_to_sentences': {
+                    'weight': 0.6,
+                    'features': ['hidden', 'attention'],
+                    'temp': 2.5
+                },
+                'sentences_to_paragraphs': {
+                    'weight': 0.4,
+                    'features': ['hidden', 'attention'],
+                    'temp': 3.0
+                }
+            }
+        },
+        curriculum_config: Optional[Dict[str, Any]] = {
+            'schedule': {
+                'bytes': 0.0,      # Start with bytes
+                'chars': 0.2,      # Add chars at 20% of training
+                'words': 0.4,      # Add words at 40% of training
+                'sentences': 0.6,  # Add sentences at 60% of training
+                'paragraphs': 0.8  # Add paragraphs at 80% of training
+            },
+            'difficulty_metrics': {
+                'bytes': ['entropy', 'length'],
+                'chars': ['vocab_size', 'complexity'],
+                'words': ['frequency', 'length'],
+                'sentences': ['depth', 'branching'],
+                'paragraphs': ['coherence', 'structure']
+            },
+            'progression_criteria': {
+                'performance_threshold': 0.8,  # Accuracy threshold to advance
+                'stability_window': 100,      # Steps to confirm stability
+                'min_samples': 1000,          # Min samples before advancing
+                'max_difficulty': 0.9         # Max difficulty to attempt
+            },
+            'pacing_strategy': {
+                'type': 'adaptive',           # adaptive or fixed
+                'warmup_steps': 1000,         # Steps before adaptation
+                'growth_rate': 0.1,           # Difficulty growth rate
+                'decay_rate': 0.05,           # Difficulty decay rate
+                'update_freq': 100            # Steps between updates
+            },
+            'level_prerequisites': {
+                'chars': ['bytes'],
+                'words': ['chars'],
+                'sentences': ['words'],
+                'paragraphs': ['sentences']
+            },
+            'sampling_weights': {
+                'performance': 0.4,    # Weight based on accuracy
+                'complexity': 0.3,     # Weight based on difficulty
+                'novelty': 0.3         # Weight based on uniqueness
+            },
+            'curriculum_metrics': {
+                'track_confusion': True,     # Track confusion matrix
+                'monitor_gradients': True,   # Monitor gradient flow
+                'analyze_errors': True,      # Analyze error patterns
+                'measure_retention': True    # Track knowledge retention
+            }
+        },
+        gradient_config: Optional[Dict[str, Any]] = {
+            'accumulation_steps': {
+                'bytes': 1,        # No accumulation needed
+                'chars': 2,        # Accumulate over 2 steps
+                'words': 4,        # Accumulate over 4 steps
+                'sentences': 8,    # Accumulate over 8 steps
+                'paragraphs': 16   # Accumulate over 16 steps
+            },
+            'batch_multipliers': {
+                'bytes': 1.0,      # Base batch size
+                'chars': 0.8,      # 80% of base batch size
+                'words': 0.6,      # 60% of base batch size
+                'sentences': 0.4,  # 40% of base batch size
+                'paragraphs': 0.2  # 20% of base batch size
+            },
+            'gradient_scaling': {
+                'enabled': True,
+                'base_scale': 1.0,
+                'level_scales': {
+                    'bytes': 1.0,      # Base gradient scale
+                    'chars': 1.2,      # Scale up for fewer samples
+                    'words': 1.5,      # Scale up more
+                    'sentences': 2.0,  # Scale up further
+                    'paragraphs': 2.5  # Scale up most
+                }
+            },
+            'sync_gradients': True,  # Synchronize gradients across levels
+            'normalize_grads': True,  # Normalize gradients by sequence length
+            'clip_mode': 'global'     # Global gradient clipping
+        },
+        loss_config: Optional[Dict[str, Any]] = {
+            'level_weights': {
+                'bytes': 1.0,      # Base level weight
+                'chars': 1.2,      # Slightly higher for character understanding
+                'words': 1.5,      # Important for semantic meaning
+                'sentences': 1.8,  # Critical for context
+                'paragraphs': 2.0  # Highest for global understanding
+            },
+            'dynamic_scaling': {
+                'enabled': True,
+                'window_size': 100,  # Steps for moving average
+                'scale_factor': 0.1  # Scale factor for dynamic weights
+            },
+            'gradient_balancing': {
+                'enabled': True,
+                'norm_type': 2,    # L2 normalization
+                'clip_value': 1.0  # Maximum gradient norm
+            },
+            'level_lr_multipliers': {
+                'bytes': 1.0,      # Base learning rate
+                'chars': 0.9,      # Slightly lower for stability
+                'words': 0.8,      # Lower for word-level
+                'sentences': 0.7,  # Lower for sentence-level
+                'paragraphs': 0.6  # Lowest for highest level
+            },
+            'loss_scaling': {
+                'enabled': True,
+                'scale_factor': 1e4,  # Initial loss scale
+                'growth_factor': 2.0,  # Scale growth rate
+                'backoff_factor': 0.5,  # Scale reduction rate
+                'growth_interval': 2000  # Steps between scale increases
+            },
+            'weights': {
+                'enabled': True,
+                'ema_decay': 0.99,  # Exponential moving average decay
+                'update_freq': 100,  # Steps between weight updates
+                'min_weight': 0.1,   # Minimum weight value
+                'max_weight': 10.0   # Maximum weight value
+            }
+        },
+        evaluation_metrics: Optional[Dict[str, Any]] = {
+            'hierarchical_metrics': {
+                'level_specific': {
+                    'bytes': ['accuracy', 'perplexity', 'entropy', 'compression_ratio'],
+                    'chars': ['accuracy', 'perplexity', 'vocab_coverage', 'char_error_rate'],
+                    'words': ['accuracy', 'perplexity', 'bleu', 'semantic_similarity'],
+                    'sentences': ['accuracy', 'perplexity', 'rouge', 'syntactic_complexity'],
+                    'paragraphs': ['accuracy', 'perplexity', 'coherence', 'topic_diversity']
+                },
+                'cross_level': {
+                    'abstraction_ratio': True,      # Measure feature abstraction between levels
+                    'information_flow': True,       # Track information propagation
+                    'alignment_score': True,        # Measure hierarchical alignment
+                    'compression_efficiency': True  # Evaluate information compression
+                },
+                'brain_metrics': {
+                    'region_accuracy': True,        # Per-region prediction accuracy
+                    'activation_patterns': True,    # Brain activation pattern analysis
+                    'temporal_correlation': True,   # Temporal correlation with EEG/fMRI
+                    'spatial_correlation': True     # Spatial correlation with brain regions
+                },
+                'learning_dynamics': {
+                    'curriculum_progress': True,    # Track curriculum learning progress
+                    'knowledge_retention': True,    # Measure knowledge retention
+                    'transfer_efficiency': True,    # Evaluate transfer between levels
+                    'adaptation_speed': True        # Monitor adaptation to new levels
+                }
+            },
+            'tracking_config': {
+                'moving_average': 100,              # Window for moving averages
+                'log_frequency': 10,                # Steps between logging
+                'detailed_analysis': 1000,          # Steps between detailed analysis
+                'save_distributions': True,         # Save score distributions
+                'plot_learning_curves': True        # Generate learning curves
+            },
+            'threshold_config': {
+                'min_accuracy': {
+                    'bytes': 0.7,
+                    'chars': 0.65,
+                    'words': 0.6,
+                    'sentences': 0.55,
+                    'paragraphs': 0.5
+                },
+                'max_perplexity': {
+                    'bytes': 50,
+                    'chars': 100,
+                    'words': 200,
+                    'sentences': 300,
+                    'paragraphs': 400
+                },
+                'min_correlation': 0.5,             # Minimum brain correlation
+                'max_error_rate': 0.3               # Maximum error rate
+            }
+        },
+        # Removed brain_adaptation_config, brain_hierarchy_config, brain_connectivity_config, brain_memory_config, brain_emotion_config, brain_learning_config, brain_development_config, brain_specialization_config, brain_coordination_config, brain_attention_config, and brain_visualization_config
+        visualization_config: Optional[Dict[str, Any]] = {
+            'enabled': True,
+            'plot_types': {
+                'learning_curves': {
+                    'metrics': ['loss', 'accuracy', 'perplexity'],
+                    'per_level': True,
+                    'smoothing': 0.9,
+                    'update_freq': 100
+                },
+                'attention_maps': {
+                    'enabled': True,
+                    'max_heads': 4,
+                    'levels': ['bytes', 'chars', 'words', 'sentences', 'paragraphs'],
+                    'update_freq': 500
+                },
+                'feature_spaces': {
+                    'enabled': True,
+                    'method': 'tsne',  # or 'umap', 'pca'
+                    'n_samples': 1000,
+                    'update_freq': 1000
+                },
+                'brain_activations': {
+                    'enabled': True,
+                    'regions': [
+                        'visual',
+                        'language', 
+                        'memory',
+                        'attention',
+                        'executive',
+                        'semantic',
+                        'integration',
+                        'sensory_temporal',
+                        'sensory_parietal'
+                    ],
+                    'plot_type': 'heatmap',
+                    'update_freq': 500
+                }
+            },
+            'hierarchical_viz': {
+                'level_transitions': {
+                    'enabled': True,
+                    'show_connections': True,
+                    'update_freq': 200
+                },
+                'feature_evolution': {
+                    'enabled': True,
+                    'track_changes': True,
+                    'update_freq': 500
+                },
+                'attention_flow': {
+                    'enabled': True,
+                    'show_weights': True,
+                    'update_freq': 300
+                }
+            },
+            'interactive_plots': {
+                'enabled': True,
+                'server_port': 8050,
+                'live_updates': True
+            },
+            'export_config': {
+                'save_plots': True,
+                'format': 'png',
+                'dpi': 300,
+                'path': 'visualizations'
+            }
+        },
+        attention_config: Optional[Dict[str, Any]] = {
+            'num_heads': {
+                'bytes': 8,       # More heads for fine-grained attention
+                'chars': 8,
+                'words': 6,       # Balanced attention
+                'sentences': 4,    # Fewer heads for high-level patterns
+                'paragraphs': 4
+            },
+            'head_dim': 64,       # Dimension per attention head
+            'dropout': 0.1,       # Attention dropout
+            'max_relative_pos': {  # Maximum relative position per level
+                'bytes': 128,
+                'chars': 64,
+                'words': 32,
+                'sentences': 16,
+                'paragraphs': 8
+            },
+            'cross_level_attention': True,  # Enable cross-level attention
+            'hierarchical_pos_encoding': True,  # Enable hierarchical position encoding
+            'attention_pruning': True,  # Enable dynamic attention pruning
+            'routing_temperature': 0.1,  # Temperature for attention routing
+        },
+        level_loss_weights: Optional[Dict[str, float]] = {
+            'bytes': 1.0,      # Base level weight
+            'chars': 1.2,      # Slightly higher for character understanding
+            'words': 1.5,      # Important for semantic meaning
+            'sentences': 1.8,  # Critical for context
+            'paragraphs': 2.0  # Highest for global understanding
+        },
+        regularization_config: Optional[Dict[str, Any]] = {
+            'weights': {
+                'abstraction': 0.1,     # Progressive feature abstraction
+                'bottleneck': 0.05,     # Information bottleneck
+                'consistency': 0.15,    # Hierarchical consistency
+                'sparsity': 0.1,       # Adaptive sparsity
+                'attention': 0.1,      # Attention regularization
+                'orthogonality': 0.05  # Level orthogonality
+            },
+            'structural_constraints': {
+                'feature_hierarchy': {
+                    'enabled': True,
+                    'weight': 0.1,
+                    'min_ratio': 1.2,  # Minimum abstraction ratio between levels
+                    'max_overlap': 0.5  # Maximum feature overlap between levels
+                },
+                'information_flow': {
+                    'enabled': True,
+                    'weight': 0.1,
+                    'bottleneck_factor': 0.8,  # Information compression factor
+                    'skip_penalty': 0.2   # Penalty for skipping levels
+                },
+                'representation_structure': {
+                    'enabled': True,
+                    'weight': 0.1,
+                    'sparsity_schedule': {
+                        'bytes': 0.1,      # Dense representations
+                        'chars': 0.2,
+                        'words': 0.3,
+                        'sentences': 0.4,
+                        'paragraphs': 0.5   # Sparse representations
+                    },
+                    'group_sparsity': True  # Enable group sparsity
+                },
+                'attention_patterns': {
+                    'enabled': True,
+                    'weight': 0.1,
+                    'local_attention': {    # Local attention weights
+                        'bytes': 0.8,       # Strong local attention
+                        'chars': 0.6,
+                        'words': 0.4,
+                        'sentences': 0.2,
+                        'paragraphs': 0.1   # Weak local attention
+                    },
+                    'cross_level': 0.05     # Cross-level attention weight
+                },
+                'temporal_coherence': {
+                    'enabled': True,
+                    'weight': 0.1,
+                    'sequence_length': {    # Sequence length ratios
+                        'bytes_to_chars': 4,
+                        'chars_to_words': 5,
+                        'words_to_sentences': 10,
+                        'sentences_to_paragraphs': 5
+                    },
+                    'smoothness': 0.1       # Temporal smoothness weight
+                }
+            },
+            'regularization_schedule': {
+                'warmup_steps': 1000,       # Steps before full regularization
+                'decay_rate': 0.99,         # Exponential decay rate
+                'min_weight': 0.01,         # Minimum regularization weight
+                'update_freq': 100          # Update frequency in steps
+            },
+            'level_specific': {
+                'bytes': {
+                    'abstraction_weight': 0.05,
+                    'sparsity_target': 0.1,
+                    'attention_temp': 0.1
+                },
+                'chars': {
+                    'abstraction_weight': 0.1,
+                    'sparsity_target': 0.2,
+                    'attention_temp': 0.2
+                },
+                'words': {
+                    'abstraction_weight': 0.15,
+                    'sparsity_target': 0.3,
+                    'attention_temp': 0.3
+                },
+                'sentences': {
+                    'abstraction_weight': 0.2,
+                    'sparsity_target': 0.4,
+                    'attention_temp': 0.4
+                },
+                'paragraphs': {
+                    'abstraction_weight': 0.25,
+                    'sparsity_target': 0.5,
+                    'attention_temp': 0.5
+                }
+            }
+        },
+        level_reg_scales: Optional[Dict[str, float]] = {
+            'bytes': 0.5,      # Lower regularization for basic features
+            'chars': 0.7,      # Gradually increase regularization
+            'words': 1.0,      # Standard regularization
+            'sentences': 1.3,  # Higher regularization for structure
+            'paragraphs': 1.5  # Strongest regularization for high-level
+        },
+        dynamic_weight_schedule: Optional[Dict[str, List[float]]] = {
+            'bytes': [1.0, 0.8, 0.6, 0.4, 0.2],      # Decrease over time
+            'chars': [0.2, 1.0, 0.8, 0.6, 0.4],      # Peak early
+            'words': [0.2, 0.4, 1.0, 0.8, 0.6],      # Peak mid-training
+            'sentences': [0.2, 0.4, 0.6, 1.0, 0.8],  # Peak late
+            'paragraphs': [0.2, 0.4, 0.6, 0.8, 1.0]  # Increase over time
+        },
+        curriculum_warmup: int = 1000,  # Steps to warm up each level
+        curriculum_overlap: float = 0.1,  # Overlap between levels
+        warmup_steps: int = 1000,
+        gradient_clip: float = 1.0,
+        save_every: int = 1000,
+        eval_every: int = 100,
+        patience: int = 10,  # Early stopping patience
+        checkpoint_dir: Optional[Path] = None,
+        use_wandb: bool = True,
+        wandb_project: str = "brain-aware-blt",
+        device: Optional[str] = None,
+        modalities: List[str] = ['text'], #Removed EEG and fMRI
+        d_model: int = 512,
+        n_layers: int = 24,
+        n_heads: int = 8,
+        encoder_layers: int = 1,
+        decoder_layers: int = 9,
+        window_size: int = 512,
+        max_ngram: int = 8,
+        hash_vocab_size: int = 300000,
+        dropout: float = 0.1,
+        paragraph_dim: int = 1024,
+        region_dim: int = 256,  # Dimension for brain region embeddings
+        
+        # Entropy-based patching parameters
+        entropy_threshold: float = 0.5,  # Global entropy threshold
+        relative_threshold: float = 0.2,  # Relative entropy threshold
+        min_patch_size: int = 4,  # Minimum patch size in bytes
+        max_patch_size: int = 32  # Maximum patch size in bytes
+    ):
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.learning_rate = learning_rate
+        self.num_epochs = num_epochs
+        self.warmup_steps = warmup_steps
+        self.gradient_clip = gradient_clip
+        self.save_every = save_every
+        self.eval_every = eval_every
+        self.patience = patience
+        self.checkpoint_dir = checkpoint_dir or Path("checkpoints")
+        self.use_wandb = use_wandb
+        self.wandb_project = wandb_project
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modalities = modalities
+        self.d_model = d_model
+        self.n_layers = n_layers
+        self.n_heads = n_heads
+        self.encoder_layers = encoder_layers
+        self.decoder_layers = decoder_layers
+        self.window_size = window_size
+        self.max_ngram = max_ngram
+        self.hash_vocab_size = hash_vocab_size
+        self.dropout = dropout
+        self.paragraph_dim = paragraph_dim
+        self.region_dim = region_dim
+
+class BrainAwareBLTTrainer:
+    """Trainer for brain-aware BLT model"""
+    def __init__(
+        self,
+        model: ByteLatentTransformer,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+        config: Optional[TrainingConfig] = None
+    ):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.config = config or TrainingConfig()
+        
+        # Move model to device
+        self.model = self.model.to(self.config.device)
+        
+        # Setup optimizer
+        self.optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=self.config.learning_rate
+        )
+        
+        # Setup scheduler
+        self.scheduler = self._create_scheduler()
+        
+        # Setup logging
+        self._setup_logging()
+        
+        # Initialize tracking
+        self.global_step = 0
+        self.best_val_loss = float('inf')
+        self.epochs_without_improvement = 0
+    
+    def _setup_logging(self) -> None:
+        """Setup logging"""
+        if self.config.use_wandb:
+            wandb.init(
+                project=self.config.wandb_project,
+                config={
+                    'model_config': {
+                        'd_model': self.config.d_model,
+                        'n_layers': self.config.n_layers,
+                        'n_heads': self.config.n_heads,
+                        'encoder_layers': self.config.encoder_layers,
+                        'decoder_layers': self.config.decoder_layers,
+                        'window_size': self.config.window_size,
+                        'max_ngram': self.config.max_ngram,
+                        'hash_vocab_size': self.config.hash_vocab_size,
+                        'dropout': self.config.dropout,
+                        'paragraph_dim': self.config.paragraph_dim,
+                        'modalities': self.config.modalities,
+                        'region_dim': self.config.region_dim
+                    },
+                    'train_config': self.config.__dict__
+                }
+            )
+    
+    def _create_scheduler(self) -> optim.lr_scheduler._LRScheduler:
+        """Create learning rate scheduler"""
+        return optim.lr_scheduler.OneCycleLR(
+            self.optimizer,
+            max_lr=self.config.learning_rate,
+            total_steps=len(self.train_loader) * self.config.num_epochs,
+            pct_start=0.1,
+            anneal_strategy='cos',
+            cycle_momentum=True,
+            base_momentum=0.85,
+            max_momentum=0.95,
+            div_factor=25.0,
+            final_div_factor=10000.0
+        )
+    
+    def train(self) -> None:
+        """Train model with dynamic head pruning and growth"""
+        self.model.train()
+        
+        # Track architecture changes
+        pruned_heads = set()
+        added_heads = set()
+        architecture_history = []
+        
+        # Initialize head utilization tracking
+        head_utilization = {}
+        complexity_metrics = []
+        
+        for epoch in range(self.config.num_epochs):
+            # Consider pruning after initial training period
+            if epoch > self.config.num_epochs * 0.2:  # Start pruning after 20% of training
+                pruning_candidates = self._identify_pruning_candidates()
+                
+                if pruning_candidates:
+                    # Validate pruning impact
+                    original_val_metrics = self._validate() if self.val_loader else None
+                    
+                    for head_info in pruning_candidates:
+                        if self._validate_head_pruning(head_info, original_val_metrics):
+                            self._prune_head(head_info['head'])
+                            pruned_heads.add(head_info['head'])
+                            pruning_history.append({
+                                'epoch': epoch,
+                                'head': head_info['head'],
+                                'redundancy_score': head_info['redundancy_score'],
+                                'impact_score': head_info['impact_score']
+                            })
+                            
+                            # Log pruning event
+                            if self.config.use_wandb:
+                                wandb.log({
+                                    'pruning/pruned_head': head_info['head'],
+                                    'pruning/total_pruned': len(pruned_heads),
+                                    'pruning/epoch': epoch
+                                })
+            self._train_epoch(epoch)
+            
+            if self.val_loader is not None and (epoch + 1) % self.config.eval_every == 0:
+                val_metrics = self._validate()
+                val_loss = val_metrics['loss']
+                
+                # Check for early stopping
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    self.epochs_without_improvement = 0
+                    self.save_checkpoint('best.pt')
+                else:
+                    self.epochs_without_improvement += 1
+                    if self.epochs_without_improvement >= self.config.patience:
+                        logging.info(f"Early stopping at epoch {epoch+1}")
+                        break
+            
+            # Save periodic checkpoint
+            if (epoch + 1) % self.config.save_every == 0:
+                self.save_checkpoint(f'epoch_{epoch+1}.pt')
+    
+    def _train_epoch(
+        self,
+        epoch: int
+    ) -> None:
+        """Train one epoch"""
+        total_loss = 0
+        total_accuracy = 0
+        total_perplexity = 0
+        num_batches = len(self.train_loader)
+        
+        with tqdm(self.train_loader, desc=f'Epoch {epoch+1}') as pbar:
+            for batch_idx, batch in enumerate(pbar):
+                metrics = self._train_step(batch)
+                total_loss += metrics['loss']
+                total_accuracy += metrics['accuracy']
+                total_perplexity += metrics['perplexity']
+                
+                # Update progress bar
+                # Get current learning rate
+                current_lr = self.scheduler.get_last_lr()[0]
+                
+                postfix = {
+                    'loss': f'{metrics["loss"]:.4f}',
+                    'avg_loss': f'{total_loss/(batch_idx+1):.4f}',
+                    'acc': f'{metrics["accuracy"]:.4f}',
+                    'avg_acc': f'{total_accuracy/(batch_idx+1):.4f}',
+                    'ppl': f'{metrics["perplexity"]:.4f}',
+                    'avg_ppl': f'{total_perplexity/(batch_idx+1):.4f}',
+                    'lr': f'{current_lr:.2e}',
+                    
+                    # Hierarchical metrics
+                    'hier': f'{metrics["hierarchical_accuracy"]:.4f}',
+                    'byte': f'{metrics.get("bytes_accuracy", 0):.4f}',
+                    'word': f'{metrics.get("words_accuracy", 0):.4f}',
+                    'sent': f'{metrics.get("sentences_accuracy", 0):.4f}',
+                    
+                    # Patch metrics
+                    'patch': f'{metrics.get("patch_accuracy", 0):.4f}',
+                    
+                    # Brain region metrics
+                    'brain': f'{metrics.get("brain_region_accuracy", 0):.4f}',
+                    'vis': f'{metrics.get("visual_accuracy", 0):.4f}',
+                    'lang': f'{metrics.get("language_accuracy", 0):.4f}',
+                    'mem': f'{metrics.get("memory_accuracy", 0):.4f}',
+                    'attn': f'{metrics.get("attention_accuracy", 0):.4f}',
+                    'exec': f'{metrics.get("executive_accuracy", 0):.4f}',
+                    'sem': f'{metrics.get("semantic_accuracy", 0):.4f}',
+                    'int': f'{metrics.get("integration_accuracy", 0):.4f}',
+                    'temp': f'{metrics.get("sensory_temporal_accuracy", 0):.4f}',
+                    'par': f'{metrics.get("sensory_parietal_accuracy", 0):.4f}'
+                }
+                pbar.set_postfix(postfix)
+                
+                # Log metrics
+                if self.config.use_wandb:
+                    # Prepare gradient and parameter histograms
+                    histograms = {}
+                    for name, param in self.model.named_parameters():
+                        # Get layer name
+                        layer_name = name.split('.')[-2] if len(name.split('.')) > 1 else name
+                        
+                        # Parameter histogram
+                        histograms[f'parameters/{layer_name}_hist'] = wandb.Histogram(
+                            param.detach().cpu().numpy()
+                        )
+                        
+                        # Parameter statistics
+                        with torch.no_grad():
+                            param_mean = param.mean().item()
+                            param_std = param.std().item()
+                            param_min = param.min().item()
+                            param_max = param.max().item()
+                            param_norm = torch.norm(param).item()
+                            
+                            histograms.update({
+                                f'parameters/{layer_name}_mean': param_mean,
+                                f'parameters/{layer_name}_std': param_std,
+                                f'parameters/{layer_name}_min': param_min,
+                                f'parameters/{layer_name}_max': param_max,
+                                f'parameters/{layer_name}_norm': param_norm
+                            })
+                        
+                        # Gradient histogram
+                        if param.grad is not None:
+                            histograms[f'gradients/{layer_name}_hist'] = wandb.Histogram(
+                                param.grad.detach().cpu().numpy()
+                            )
+                    
+                    # Log metrics and histograms
+                    wandb.log({
+                        # Overall metrics
+                        #'train/loss:[], This is missing logic
+                        'train/hierarchical_accuracy': metrics['hierarchical_accuracy'],
+                        'train/patch_accuracy': metrics.get('patch_accuracy', 0),
+                        'train/combined_accuracy': metrics['accuracy'],
+                        'train/perplexity': metrics['perplexity'],
+                        'train/learning_rate': self.scheduler.get_last_lr()[0],
+                        'train/epoch': epoch,
+                        'train/step': self.global_step,
+                        
+                        # Brain region accuracies
+                        'train/visual_accuracy': metrics.get('visual_accuracy', 0),
+                        'train/language
+```python
+            augment_prob=0.5,  # Enable data augmentation
+            mask_prob=0.15,    # Enable masking for MLM-style training
+            fmri_window=200,   # From BrainLM paper
+            fmri_patch_size=20,  # From BrainLM paper
+            n_parcels=424      # From BrainLM paper
+        )
+        
+        val_dataset = None
+        if args.val_data:
+            val_text_data = load_text_data(args.val_data)
+            val_fmri_data = load_fmri_data(args.val_fmri_data) if args.val_fmri_data else None
+            
+            val_dataset = MultimodalBrainAwareDataset(
+                text_data=val_text_data,
+                fmri_data=val_fmri_data,
+                config=config,
+                augment_prob=0.0,  # No augmentation for validation
+                mask_prob=0.0,     # No masking for validation
+                fmri_window=200,   # From BrainLM paper
+                fmri_patch_size=20,  # From BrainLM paper
+                n_parcels=424      # From BrainLM paper
+            )
+        
+        # Create data loaders
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=32,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True
+        )
+        
+        val_loader = None
+        if val_dataset is not None:
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=32,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True
+            )
+        
+        # Create B-STAR trainer
+        trainer = BStarTrainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            learning_rate=1e-4,
+            warmup_steps=1000,
+            max_steps=args.max_steps,
+            eval_every=1000,
+            save_every=5000,
+            checkpoint_dir=args.checkpoint_dir,
+            device='cuda',
+            use_wandb=True
+        )
+        
+        # Resume from checkpoint if specified
+        if args.resume:
+            logger.info(f"Resuming from checkpoint: {args.resume}")
+            trainer.load_checkpoint(args.resume)
+        
+        # Train model with B-STAR
+        logger.info("Starting B-STAR training...")
+        trainer.train()
+        
+        logger.info("Training completed successfully!")
+        
+        # Save final model
+        final_path = args.checkpoint_dir / "final_model.pt"
+        logger.info(f"Saving final model to {final_path}")
+        trainer.save_checkpoint("final_model.pt")
+        
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}")
+        raise
+
+def load_text_data(data_dir: Path) -> List[str]:
+    """Load text data from directory"""
+    texts = []
+    for file in data_dir.glob("*.txt"):
+        with open(file, "r") as f:
+            texts.extend(f.read().split("\n\n"))
+    return texts
+
+def load_fmri_data(data_dir: Path, smooth_kernel: int = 3, min_activity: float = 0.1) -> Optional[torch.Tensor]:
+    """Load and preprocess fMRI data from NIfTI files according to BrainLM paper"""
+    try:
+        import nibabel as nib
+        from scipy.ndimage import gaussian_filter
+    except ImportError:
+        raise ImportError("nibabel and scipy are required for fMRI data loading. Install with: pip install nibabel scipy")
+        
+    # Load NIfTI files
+    fmri_files = list(data_dir.glob("*.nii.gz"))
+    if not fmri_files:
+        return None
+        
+    fmri_data = []
+    for file in fmri_files:
+        # Load NIfTI using nibabel
+        img = nib.load(file)
+        data = img.get_fdata()
+        
+        # Apply spatial smoothing with Gaussian kernel
+        for t in range(data.shape[-1]):  # Smooth each time point
+            data[..., t] = gaussian_filter(data[..., t], sigma=smooth_kernel)
+        
+        # Convert to tensor
+        data = torch.from_numpy(data).float()
+        
+        # Reshape to (time, x, y, z)
+        if len(data.shape) == 4:
+            data = data.permute(3, 0, 1, 2)
+            
+        # Normalize each voxel time series
+        data = (data - data.mean(dim=0, keepdim=True)) / (data.std(dim=0, keepdim=True) + 1e-8)
+        
+        # Apply activity threshold
+        data = data * (torch.abs(data) > min_activity).float()
+        
+        fmri_data.append(data)
+    
+    # Stack all sessions
+    fmri_data = torch.cat(fmri_data, dim=0)
+    
+    return fmri_data
+
+if __name__ == "__main__":
+    main()
