@@ -1,0 +1,744 @@
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+from pathlib import Path
+import argparse
+import logging
+import json
+from typing import Dict, List, Optional, Tuple, Union, Any
+import numpy as np
+from tqdm import tqdm
+import wandb
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from dataclasses import dataclass
+import torchvision.transforms as transforms
+import torchaudio
+import torch.nn.functional as F
+
+class PFCModule(nn.Module):
+    """
+    PFC Module for inhibitory control, suppressing unwanted actions or memories.
+    """
+    def __init__(self, hidden_dim, memory_dim, context_dim):
+        super(PFCModule, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.memory_dim = memory_dim
+        self.context_dim = context_dim
+
+        # Layers to process hidden states and memory
+        self.hidden_layer = nn.Linear(hidden_dim, hidden_dim)
+        self.memory_layer = nn.Linear(memory_dim, hidden_dim)
+
+        # Layers for inhibitory signals
+        self.inhibitory_layer = nn.Linear(hidden_dim + context_dim, hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(self, hidden_state, memory, context):
+        # Process hidden state and memory
+        hidden_processed = F.relu(self.hidden_layer(hidden_state))
+        memory_processed = F.relu(self.memory_layer(memory))
+
+        # Combine hidden, memory, and context
+        combined = torch.cat((hidden_processed, memory_processed, context), dim=-1)
+        inhibitory_signals = torch.sigmoid(self.inhibitory_layer(combined))
+
+        # Modulate hidden state with inhibitory signals
+        modulated_hidden = hidden_state * (1 - inhibitory_signals)
+        output = F.relu(self.output_layer(modulated_hidden))
+
+        return output, inhibitory_signals
+
+class MetacognitiveModule(nn.Module):
+    """
+    Enhanced Metacognitive Module with reflection capabilities and safety monitoring.
+    """
+    def __init__(self, hidden_dim, memory_dim):
+        super(MetacognitiveModule, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.memory_dim = memory_dim
+
+        # Original monitor layers for safety
+        self.hidden_monitor = nn.Linear(hidden_dim, 1)
+        self.memory_monitor = nn.Linear(memory_dim, 1)
+        
+        # Reflection generation layers
+        self.reflection_net = nn.Sequential(
+            nn.Linear(hidden_dim + memory_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh()
+        )
+        
+        # Error detection network
+        self.error_detector = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid()
+        )
+        
+        # Self-correction mechanism
+        self.correction_net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        # Memory of past reflections (stores last k reflections)
+        self.reflection_memory = []
+        self.max_reflections = 5
+        
+    def forward(self, hidden_state, memory):
+        # Original safety monitoring
+        hidden_score = torch.sigmoid(self.hidden_monitor(hidden_state))
+        memory_score = torch.sigmoid(self.memory_monitor(memory))
+        safety_flag = (hidden_score + memory_score) / 2
+        
+        # Generate reflection
+        combined = torch.cat([hidden_state, memory], dim=-1)
+        reflection = self.reflection_net(combined)
+        
+        # Detect potential errors
+        error_prob = self.error_detector(reflection)
+        
+        # Store reflection in memory
+        if len(self.reflection_memory) >= self.max_reflections:
+            self.reflection_memory.pop(0)
+        self.reflection_memory.append(reflection.detach())
+        
+        # If error probability is high, attempt self-correction
+        corrected_state = hidden_state
+        if error_prob > 0.5:
+            # Use reflection and original state for correction
+            correction_input = torch.cat([hidden_state, reflection], dim=-1)
+            corrected_state = self.correction_net(correction_input)
+            
+        return {
+            'safety_flag': safety_flag,
+            'reflection': reflection,
+            'error_prob': error_prob,
+            'corrected_state': corrected_state,
+            'needs_reflection': error_prob > 0.5
+        }
+        
+    def get_reflection_history(self):
+        """Get history of past reflections"""
+        return self.reflection_memory
+        
+    def reflect_on_error(self, error_context):
+        """Generate targeted reflection based on error context"""
+        if not self.reflection_memory:
+            return None
+            
+        # Combine error context with past reflections
+        past_reflections = torch.stack(self.reflection_memory)
+        avg_reflection = past_reflections.mean(dim=0)
+        
+        # Generate new reflection considering error context
+        combined = torch.cat([avg_reflection, error_context], dim=-1)
+        new_reflection = self.reflection_net(combined)
+        
+        return new_reflection
+
+class ValueNetwork(nn.Module):
+    """
+    Value Network for assigning safety values to different memory tokens or hidden states.
+    """
+    def __init__(self, token_dim):
+        super(ValueNetwork, self).__init__()
+        self.token_dim = token_dim
+
+        # Assign safety values to tokens
+        self.value_layer = nn.Linear(token_dim, 1)
+
+    def forward(self, tokens):
+        # Compute safety values
+        values = torch.sigmoid(self.value_layer(tokens))
+        return values
+
+class MemoryAugmentedTransformer(nn.Module):
+    """
+    Transformer model augmented with PFC, Metacognitive, and Value Network modules for safety regulation.
+    """
+    def __init__(self, transformer, hidden_dim, memory_dim, context_dim):
+        super(MemoryAugmentedTransformer, self).__init__()
+        self.transformer = transformer
+        self.pfc = PFCModule(hidden_dim, memory_dim, context_dim)
+        self.metacognitive = MetacognitiveModule(hidden_dim, memory_dim)
+        self.value_network = ValueNetwork(memory_dim)
+
+    def forward(self, hidden_states, memory, context):
+        # Pass through transformer
+        transformer_output = self.transformer(hidden_states)
+
+        # PFC module processing
+        modulated_output, inhibitory_signals = self.pfc(transformer_output, memory, context)
+
+        # Monitor for safety
+        safety_flag = self.metacognitive(modulated_output, memory)
+
+        # Evaluate safety values for memory tokens
+        memory_values = self.value_network(memory)
+
+        return modulated_output, safety_flag, memory_values
+
+class BinaryLatentMemoryPool:
+    """Enhanced memory pool for storing and managing binary latent states with improved memory management"""
+    def __init__(self, pool_size: int, latent_dim: int, device: str = 'cuda',
+                 memory_decay: float = 0.99, importance_threshold: float = 0.1,
+                 compression_ratio: float = 0.5, diversity_threshold: float = 0.3,
+                 initial_temperature: float = 1.0, initial_exploration: float = 0.1,
+                 min_temperature: float = 0.1, max_temperature: float = 2.0,
+                 temperature_decay: float = 0.99, exploration_decay: float = 0.995,
+                 n_star: int = 4):  # Target number of correct responses per query for balance score
+        self.pool_size = pool_size
+        self.latent_dim = latent_dim
+        self.device = device
+        self.memory_states = torch.zeros(pool_size, latent_dim).to(device)
+        self.binary_states = torch.zeros(pool_size, latent_dim).bool().to(device)
+        self.state_importance = torch.zeros(pool_size).to(device)
+        self.memory_age = torch.zeros(pool_size).to(device)
+        self.memory_decay = memory_decay
+        self.importance_threshold = importance_threshold
+        self.compression_ratio = compression_ratio
+        self.diversity_threshold = diversity_threshold
+        
+        # B* temperature and exploration parameters
+        self.temperature = initial_temperature
+        self.exploration_rate = initial_exploration
+        self.min_temperature = min_temperature
+        self.max_temperature = max_temperature
+        self.temperature_decay = temperature_decay
+        self.exploration_decay = exploration_decay
+        
+        # B-STAR monitoring
+        self.n_star = n_star  # Target number of correct responses for balance score
+        self.temperature_history = []
+        self.exploration_history = []
+        self.balance_scores = []
+        self.exploration_scores = []  # Track Pass@K-S
+        self.exploitation_scores = []  # Track Reward@K-S
+        
+        # Track access frequency for each memory state
+        self.access_count = torch.zeros(pool_size).to(device)
+        self.last_access = torch.zeros(pool_size).to(device)
+        
+        # Binary state encoder/decoder
+        self.state_encoder = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim * 2),
+            nn.ReLU(),
+            nn.Linear(latent_dim * 2, latent_dim),
+            nn.Sigmoid()
+        ).to(device)
+        
+        self.state_decoder = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim * 2),
+            nn.ReLU(),
+            nn.Linear(latent_dim * 2, latent_dim)
+        ).to(device)
+        
+        # Enhanced memory usage and compression statistics
+        self.usage_stats = {
+            'updates': 0,
+            'states_added': 0,
+            'states_dropped': 0,
+            'importance_history': [],
+            'memory_age_history': [],
+            'compression_ratio_history': [],
+            'binary_sparsity_history': [],
+            'reconstruction_error_history': [],
+            'diversity_scores': [],
+            'access_patterns': [],
+            'memory_lifetime': [],
+            'importance_distribution': []
+        }
+        
+    def compute_balance_score(self, n_correct: int, n_selected: int) -> float:
+        """Compute B-STAR balance score for current batch"""
+        # Discount factor encouraging sufficient correct responses
+        discount = min(n_correct / self.n_star, 1.0)
+        # Ratio of correct responses among selected
+        ratio = n_correct / max(n_selected, 1)
+        # Balance score combining quantity and quality
+        return float(discount * ratio)
+
+    def update(self, new_states: torch.Tensor, k: int, binary_latents: Optional[torch.Tensor] = None, 
+              update_params: bool = True, correct_mask: Optional[torch.Tensor] = None):
+        """Update memory pool with enhanced importance scoring and diversity selection"""
+        with torch.no_grad():
+            # Update memory age and access patterns
+            self.memory_age += 1
+            current_step = self.usage_stats['updates']
+            self.last_access = torch.where(
+                self.access_count > 0,
+                current_step - self.last_access,
+                self.memory_age
+            )
+
+            # Apply temperature scaling and exploration
+            if binary_latents is not None:
+                new_binary_states = binary_latents
+            else:
+                # Encode new states to binary with temperature scaling
+                binary_probs = self.state_encoder(new_states)
+                
+                # Apply temperature scaling
+                binary_probs = torch.sigmoid(torch.log(binary_probs + 1e-10) / self.temperature)
+                
+                # Apply exploration
+                if torch.rand(1).item() < self.exploration_rate:
+                    # Random exploration
+                    new_binary_states = torch.rand_like(binary_probs) < self.exploration_rate
+                else:
+                    # Greedy selection with temperature
+                    new_binary_states = (binary_probs > 0.5).bool()
+
+            # Compute binary entropy for importance
+            binary_entropy = -torch.mean(
+                new_binary_states.float() * torch.log2(new_binary_states.float() + 1e-10) +
+                (1 - new_binary_states.float()) * torch.log2(1 - new_binary_states.float() + 1e-10),
+                dim=1
+            )
+            
+            # Enhanced importance scoring combining multiple factors
+            recency_score = 1.0 / (1.0 + self.memory_age)
+            access_score = self.access_count / (self.usage_stats['updates'] + 1)
+            l2_norm = torch.norm(self.memory_states, dim=1)
+            content_score = l2_norm / (torch.max(l2_norm) + 1e-8)
+            
+            # Compute exponential decay
+            time_decay = self.memory_decay ** self.memory_age
+            
+            # Combine scores with learned weights
+            self.state_importance = (
+                0.4 * recency_score + 
+                0.3 * access_score +
+                0.3 * content_score
+            ) * time_decay
+            
+            # Calculate importance scores combining binary entropy, information content and recency
+            state_entropy = self._compute_state_entropy(self.memory_states)
+            binary_importance = binary_entropy / binary_entropy.max()  # Normalize to [0,1]
+            recency_weight = 1.0 / (1.0 + self.memory_age)
+            
+            # Combine scores with learned weights
+            self.state_importance = (
+                0.4 * binary_importance +
+                0.3 * state_entropy * recency_weight +
+                0.3 * (1.0 / (1.0 + self.memory_age))  # Pure recency score
+            )
+            
+            # Filter out low importance states
+            valid_mask = self.state_importance > self.importance_threshold
+            valid_states = self.memory_states[valid_mask]
+            valid_binary = self.binary_states[valid_mask]
+            valid_importance = self.state_importance[valid_mask]
+            valid_age = self.memory_age[valid_mask]
+            
+            # Keep most important states
+            if len(valid_states) > self.pool_size - k:
+                _, indices = torch.topk(valid_importance, self.pool_size - k)
+                kept_states = valid_states[indices]
+                kept_binary = valid_binary[indices]
+                kept_age = valid_age[indices]
+            else:
+                kept_states = valid_states
+                kept_binary = valid_binary
+                kept_age = valid_age
+            
+            # Process new states with enhanced diversity selection
+            if new_states.size(0) > k:
+                # Compute pairwise cosine similarity
+                similarities = torch.nn.functional.cosine_similarity(
+                    new_states.unsqueeze(1),
+                    new_states.unsqueeze(0),
+                    dim=2
+                )
+                
+                # Greedy diversity maximization
+                selected_indices = []
+                available_indices = set(range(len(new_states)))
+                
+                # Start with highest importance state
+                importance = torch.norm(new_states, dim=1)
+                first_idx = importance.argmax().item()
+                selected_indices.append(first_idx)
+                available_indices.remove(first_idx)
+                
+                while len(selected_indices) < k and available_indices:
+                    # Compute maximum similarity to selected states
+                    max_similarities = similarities[list(available_indices)][:, selected_indices].max(dim=1)[0]
+                    
+                    # Select state with lowest maximum similarity
+                    next_idx = min(available_indices, key=lambda i: max_similarities[i].item())
+                    
+                    # Only add if diversity threshold is met
+                    if max_similarities[next_idx].item() < self.diversity_threshold:
+                        selected_indices.append(next_idx)
+                    available_indices.remove(next_idx)
+                
+                selected_indices = torch.tensor(selected_indices, device=self.device)
+                new_states = new_states[selected_indices]
+                new_binary_states = new_binary_states[selected_indices]
+            
+            # Concatenate and update
+            self.memory_states = torch.cat([kept_states, new_states], dim=0)
+            self.binary_states = torch.cat([kept_binary, new_binary_states], dim=0)
+            self.memory_age = torch.cat([
+                kept_age,
+                torch.zeros(len(new_states), device=self.device)
+            ])
+            
+            # Ensure pool size stays constant
+            if self.memory_states.size(0) > self.pool_size:
+                self.memory_states = self.memory_states[:self.pool_size]
+                self.binary_states = self.binary_states[:self.pool_size]
+                self.memory_age = self.memory_age[:self.pool_size]
+            
+            # Compute compression metrics
+            compression_ratio = self._compute_compression_ratio()
+            reconstruction_error = self._compute_reconstruction_error()
+            binary_sparsity = self._compute_binary_sparsity()
+            
+            # Update enhanced statistics
+            self.usage_stats['updates'] += 1
+            self.usage_stats['states_added'] += len(new_states)
+            self.usage_stats['states_dropped'] += (len(valid_states) - len(kept_states))
+            
+            # Compute B-STAR metrics and update parameters
+            if update_params:
+                if correct_mask is not None:
+                    # Get number of correct and selected responses
+                    n_correct = correct_mask.sum().item()
+                    n_selected = len(new_states)
+                    
+                    # Compute balance score
+                    balance_score = self.compute_balance_score(n_correct, n_selected)
+                    self.balance_scores.append(balance_score)
+                    
+                    # Track exploration (Pass@K-S)
+                    exploration_score = n_correct / max(k, 1)  # Ratio of correct responses
+                    self.exploration_scores.append(exploration_score)
+                    
+                    # Track exploitation (Reward@K-S) 
+                    exploitation_score = n_correct / max(n_selected, 1)  # Quality of selection
+                    self.exploitation_scores.append(exploitation_score)
+                    
+                    # Update temperature and exploration based on balance score
+                    self._update_temperature_and_exploration(balance_score)
+                else:
+                    # Fallback to original update if no correct_mask provided
+                    self._update_temperature_and_exploration()
+                
+                # Track history
+                self.temperature_history.append(self.temperature)
+                self.exploration_history.append(self.exploration_rate)
+            
+            # Track detailed memory statistics
+            self.usage_stats['importance_history'].append(self.state_importance.mean().item())
+            self.usage_stats['memory_age_history'].append(self.memory_age.mean().item())
+            self.usage_stats['compression_ratio_history'].append(compression_ratio)
+            self.usage_stats['binary_sparsity_history'].append(binary_sparsity)
+            self.usage_stats['reconstruction_error_history'].append(reconstruction_error)
+            
+            # Track diversity and memory lifetime metrics
+            if len(new_states) > 1:
+                diversity_score = 1.0 - torch.nn.functional.cosine_similarity(
+                    new_states.unsqueeze(1),
+                    new_states.unsqueeze(0),
+                    dim=2
+                ).mean().item()
+                self.usage_stats['diversity_scores'].append(diversity_score)
+            
+            self.usage_stats['access_patterns'].append(self.access_count.mean().item())
+            self.usage_stats['memory_lifetime'].append(
+                (self.memory_age * (self.state_importance > self.importance_threshold).float()).mean().item()
+            )
+            self.usage_stats['importance_distribution'].append(
+                self.state_importance.histc(bins=10, min=0, max=1).tolist()
+            )
+            
+    def get_states(self) -> torch.Tensor:
+        """Get current memory states with importance weighting and binary reconstruction"""
+        # Weight states by importance
+        weights = torch.softmax(self.state_importance, dim=0)
+        weighted_states = self.memory_states * weights.unsqueeze(1)
+        
+        # Reconstruct from binary states when beneficial
+        binary_states = self.binary_states.float()
+        reconstructed_states = self.state_decoder(binary_states)
+        
+        # Use binary reconstruction when compression ratio is good
+        use_binary = self._compute_compression_ratio() < self.compression_ratio
+        return torch.where(use_binary.unsqueeze(1), reconstructed_states, weighted_states)
+    
+    def _select_diverse_binary_states(self, binary_states: torch.Tensor, k: int) -> torch.Tensor:
+        """Select diverse states using Hamming distance between binary representations"""
+        if len(binary_states) <= k:
+            return torch.arange(len(binary_states))
+            
+        # Compute pairwise Hamming distances
+        distances = torch.cdist(
+            binary_states.float(),
+            binary_states.float(),
+            p=0  # Hamming distance
+        )
+        
+        # Greedy selection of diverse states
+        selected = [0]  # Start with first state
+        while len(selected) < k:
+            # Compute minimum distance to selected states
+            min_dist = distances[selected].min(dim=0)[0]
+            
+            # Select state with maximum minimum distance
+            remaining = list(set(range(len(binary_states))) - set(selected))
+            next_idx = max(remaining, key=lambda i: min_dist[i])
+            selected.append(next_idx)
+            
+        return torch.tensor(selected, device=binary_states.device)
+    
+    def _compute_state_entropy(self, states: torch.Tensor) -> torch.Tensor:
+        """Compute entropy of states as importance measure"""
+        # Normalize states to probability distribution
+        probs = torch.softmax(states, dim=1)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
+        return entropy
+        
+    def _compute_compression_ratio(self) -> float:
+        """Compute effective compression ratio of binary states"""
+        binary_size = self.binary_states.numel() / 8  # Convert bits to bytes
+        full_size = self.memory_states.numel() * self.memory_states.element_size()
+        return binary_size / full_size
+        
+    def _compute_reconstruction_error(self) -> float:
+        """Compute reconstruction error of binary states"""
+        with torch.no_grad():
+            binary_states = self.binary_states.float()
+            reconstructed = self.state_decoder(binary_states)
+            error = nn.MSELoss()(reconstructed, self.memory_states)
+            return error.item()
+            
+    def _compute_binary_sparsity(self) -> float:
+        """Compute sparsity of binary states"""
+        return 1.0 - (self.binary_states.float().mean().item())
+        
+    def _update_temperature_and_exploration(self, balance_score: Optional[float] = None):
+        """Update temperature and exploration rate based on B-STAR balance score"""
+        if balance_score is not None:
+            # Adjust temperature based on balance score
+            if balance_score < 0.5:  # Poor balance
+                # Increase temperature to encourage exploration
+                self.temperature = min(
+                    self.max_temperature,
+                    self.temperature / self.temperature_decay
+                )
+            else:  # Good balance
+                # Gradually reduce temperature
+                self.temperature = max(
+                    self.min_temperature,
+                    self.temperature * self.temperature_decay
+                )
+            
+            # Adjust exploration rate based on balance score
+            if balance_score < 0.3:  # Very poor balance
+                # Increase exploration significantly
+                self.exploration_rate = min(1.0, self.exploration_rate / (self.exploration_decay * 0.8))
+            elif balance_score < 0.7:  # Moderate balance
+                # Increase exploration moderately
+                self.exploration_rate = min(1.0, self.exploration_rate / self.exploration_decay)
+            else:  # Good balance
+                # Reduce exploration gradually
+                self.exploration_rate *= self.exploration_decay
+        else:
+            # Fallback to original update logic
+            # Decay temperature
+            self.temperature = max(
+                self.min_temperature,
+                self.temperature * self.temperature_decay
+            )
+            
+            # Increase temperature if memory performance is poor
+            avg_importance = self.state_importance.mean().item()
+            if avg_importance < self.importance_threshold:
+                self.temperature = min(
+                    self.max_temperature,
+                    self.temperature / self.temperature_decay
+                )
+            
+            # Decay exploration rate
+            self.exploration_rate *= self.exploration_decay
+            
+            # Increase exploration if memory is too homogeneous
+            if self._compute_memory_diversity() < self.diversity_threshold:
+                self.exploration_rate = min(1.0, self.exploration_rate / self.exploration_decay)
+    
+    def _compute_memory_diversity(self) -> float:
+        """Compute diversity of memory states"""
+        if len(self.memory_states) <= 1:
+            return 0.0
+            
+        # Compute pairwise cosine similarities
+        normalized = torch.nn.functional.normalize(self.memory_states, dim=1)
+        similarities = torch.mm(normalized, normalized.t())
+        
+        # Average similarity (lower means more diverse)
+        avg_similarity = (similarities.sum() - similarities.diag().sum()) / (similarities.numel() - similarities.size(0))
+        
+        # Convert to diversity score (1 - similarity)
+        return 1.0 - avg_similarity.item()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get memory usage and compression statistics"""
+        stats = {
+            'pool_size': self.pool_size,
+            'current_size': len(self.memory_states),
+            'mean_importance': self.state_importance.mean().item(),
+            'mean_age': self.memory_age.mean().item(),
+            'compression_ratio': self._compute_compression_ratio(),
+            'binary_sparsity': self._compute_binary_sparsity(),
+            'reconstruction_error': self._compute_reconstruction_error(),
+            'updates': self.usage_stats['updates'],
+            'total_states_added': self.usage_stats['states_added'],
+            'total_states_dropped': self.usage_stats['states_dropped'],
+            'importance_history': self.usage_stats['importance_history'],
+            'age_history': self.usage_stats['memory_age_history'],
+            'compression_history': self.usage_stats['compression_ratio_history'],
+            'sparsity_history': self.usage_stats['binary_sparsity_history'],
+            'reconstruction_history': self.usage_stats['reconstruction_error_history'],
+            
+            # B-STAR specific stats
+            'temperature': self.temperature,
+            'exploration_rate': self.exploration_rate,
+            'temperature_history': self.temperature_history,
+            'exploration_history': self.exploration_history,
+            'memory_diversity': self._compute_memory_diversity(),
+            
+            # B-STAR monitoring metrics
+            'balance_scores': self.balance_scores,
+            'exploration_scores': self.exploration_scores,
+            'exploitation_scores': self.exploitation_scores,
+            'mean_balance_score': sum(self.balance_scores) / max(len(self.balance_scores), 1),
+            'mean_exploration_score': sum(self.exploration_scores) / max(len(self.exploration_scores), 1),
+            'mean_exploitation_score': sum(self.exploitation_scores) / max(len(self.exploitation_scores), 1)
+        }
+        return stats
+
+class MultiStateRNN(nn.Module):
+    """Multi-state RNN with memory pool integration"""
+    def __init__(self, hidden_size: int, num_layers: int, memory_size: int = 1024, k_tokens: int = 32):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.k_tokens = k_tokens
+        
+        # RNN cells for each layer
+        self.cells = nn.ModuleList([
+            nn.LSTMCell(hidden_size, hidden_size)
+            for _ in range(num_layers)
+        ])
+        
+        # Memory pool
+        self.memory_pool = MemoryPool(memory_size, hidden_size)
+        
+        # Memory integration
+        self.memory_attention = nn.MultiheadAttention(
+            embed_dim=hidden_size,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        # State compression policy
+        self.compression_enabled = False
+        self.max_states = None
+        
+    def forward(self, x: torch.Tensor, states: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
+        """
+        Forward pass with memory integration and state compression
+        Args:
+            x: Input tensor [batch_size, hidden_size]
+            states: Optional list of (h, c) states for each layer
+        Returns:
+            output: Output tensor [batch_size, hidden_size]
+            new_states: Updated states for each layer
+        """
+        batch_size = x.size(0)
+        
+        # Initialize states if not provided
+        if states is None:
+            states = [(torch.zeros(batch_size, self.hidden_size, device=x.device),
+                      torch.zeros(batch_size, self.hidden_size, device=x.device))
+                     for _ in range(self.num_layers)]
+        
+        # Get memory tokens
+        memory_tokens = self.memory_pool.get_tokens().unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # Process through layers
+        current_input = x
+        new_states = []
+        for i, (h, c) in enumerate(states):
+            # Concatenate input with memory tokens
+            combined_input = torch.cat([current_input.unsqueeze(1), memory_tokens], dim=1)
+            
+            # Apply memory attention
+            attended_memory, _ = self.memory_attention(
+                current_input.unsqueeze(1),
+                memory_tokens,
+                memory_tokens
+            )
+            
+            # Combine with current input
+            enhanced_input = current_input + attended_memory.squeeze(1)
+            
+            # RNN cell forward pass
+            new_h, new_c = self.cells[i](enhanced_input, (h, c))
+            
+            # Apply compression if enabled
+            if self.compression_enabled and self.max_states is not None:
+                new_h, new_c = self._compress_states(new_h, new_c)
+                
+            new_states.append((new_h, new_c))
+            current_input = new_h
+            
+        # Update memory pool with last K tokens
+        self.memory_pool.update(current_input[-self.k_tokens:], self.k_tokens)
+            
+        return current_input, new_states
+        
+    def _compress_states(self, h: torch.Tensor, c: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compress states if they exceed max_states"""
+        if h.size(1) > self.max_states:
+            # Keep most important states based on activation magnitude
+            importance = torch.norm(h, dim=2)  # [batch_size, num_states]
+            _, indices = torch.topk(importance, self.max_states, dim=1)
+            h = torch.gather(h, 1, indices.unsqueeze(-1).expand(-1, -1, h.size(-1)))
+            c = torch.gather(c, 1, indices.unsqueeze(-1).expand(-1, -1, c.size(-1)))
+        return h, c
+
+class GoalNode:
+    """Node in the goal tree representing a subgoal"""
+    def __init__(self, text: str, parent=None):
+        self.text = text
+        self.parent = parent
+        self.children = []
+        self.importance = 1.0
+        self.visits = 0
+        self.rewards = []
+        
+    def add_child(self, child_text: str) -> 'GoalNode':
+        """Add a child node with given text"""
+        child = GoalNode(child_text, self)
+        self.children.append(child)
+        return child
+        
+    def update(self, reward: float):
+        """Update node statistics with new reward"""
+        self.visits += 1
+        self.rewards.append(reward)
+        self.importance = np.mean(self.rewards)
+        
+    def is_leaf(self) -> bool:
+        """Check if node is
