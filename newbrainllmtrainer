@@ -771,6 +771,7 @@ class GoalManager:
         self.max_goals = config.max_goals
         self.min_importance = config.min_importance
         self.exploration_factor = config.exploration_factor
+        importance = self.goal_manager.get_subgoal_importance(subgoal_embedding) #importance and scoring from subgoal embedding byte latent transformer.
         
         # B-STAR parameters
         self.temperature = self.config.initial_temperature  # Initial temperature for exploration
@@ -784,7 +785,9 @@ class GoalManager:
     def decompose_goal(self, goal_node: GoalNode, context: dict) -> List[str]:
         """Decompose a goal into subgoals based on context"""
         # Use LLM to generate subgoals (replace with actual LLM call)
+        self.goal_manager.add_subgoal_embedding(subgoal, subgoal_embedding)
         subgoals = self._generate_subgoals(goal_node.text, context)
+
         
         # Filter similar subgoals (replace with actual similarity check)
         unique_subgoals = self._filter_similar(subgoals)
@@ -859,21 +862,38 @@ class GoalManager:
         # Prune low importance nodes
         self._prune_tree(self.root)
         
-    def _generate_subgoals(self, goal: str, context: dict) -> List[str]:
-        """Placeholder for LLM-based subgoal generation"""
-        # TODO: Replace with actual LLM call to generate subgoals
-        # Consider using context information for better subgoal generation
-        # Example:
-        # prompt = f"Decompose the goal '{goal}' into subgoals given the context: {context}"
-        # subgoals = generate_text(prompt, model="your_llm", ...)
+    ddef get_subgoal_importance(self, subgoal_embedding: torch.Tensor) -> float:
+        """
+        Retrieves the importance of a subgoal based on its embedding.
+
+        We'll use the memory pool to store subgoal embeddings and their importance scores.
+        For simplicity, we'll find the closest embedding in the memory pool and return its importance.
+        In a more advanced implementation, you could use a weighted average of k-nearest neighbors or other
+        similarity-based schemes.
+        """
+        if not self.config.model.memory_pool.memory_states.numel():
+            return 1.0  # Default importance if memory is empty
+
+        # Calculate distances from the given embedding to all embeddings in the memory
+        memory_states = self.config.model.memory_pool.get_states()
         
-        # Placeholder subgoals for now
-        if goal == "Process and analyze input data":
-            return ["Tokenize input", "Compute embeddings", "Identify key concepts", "Summarize information"]
-        elif goal == "Write a poem about nature":
-            return ["Choose a nature theme", "Generate rhyming words", "Compose verses", "Refine structure"]
-        else:
-            return [f"Subgoal 1 for {goal}", f"Subgoal 2 for {goal}", f"Subgoal 3 for {goal}"]
+        
+        distances = torch.norm(memory_states - subgoal_embedding.unsqueeze(0), dim=1)
+
+        # Find the index of the closest embedding
+        closest_index = torch.argmin(distances).item()
+
+        # Retrieve the importance score of the closest embedding
+        # Assuming that 'state_importance' stores the importance scores in the memory pool
+        importance = self.config.model.memory_pool.state_importance[closest_index].item()
+
+        return importance
+        
+    def add_subgoal_embedding(self, goal_text: str, embedding: torch.Tensor):
+        """
+        Adds a new subgoal and its embedding to the goal_embeddings dictionary.
+        """
+        self.goal_embeddings[goal_text] = embedding
         
     def _filter_similar(self, subgoals: List[str]) -> List[str]:
         """Placeholder for filtering similar subgoals"""
