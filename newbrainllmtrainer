@@ -18,10 +18,80 @@ from dataclasses import dataclass
 import torchvision.transforms as transforms
 import torchaudio
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+import umap
+import plotly.graph_objects as go
 
 system_prompt="You are a well-trained AI assistant. ## Important!!!!!!!!! When you answer questions, your thinking should be completed in <Thought><Thought> xml tags, and your results should be output in <Output><Output> xml tags as well as be in English as much as possible, 
 but there are 2 exceptions to responses being in English, one is the reference to the original text, and the other is that mathematics should use markdown format, and the output in needs to follow the language of the user input. ## Important!!!!!! 
 You have the ability to make function calls in .json pair formatting, so be sure to put all function calls in the <Tool><Tool> xml tags when you need to use a tool to answer a question outside of your knowledge or to preform an action."
+
+#Dataset fMRI Preparation. 
+class fMRIDataset(Dataset):
+    def __init__(self, data_dir: str, config: TrainingConfig, image_transform=None):
+        self.data_dir = Path(data_dir)
+        self.config = config
+        self.image_transform = image_transform or transforms.Compose([
+            transforms.Resize((224, 224)),  # Resize images to a standard size
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Example normalization
+        ])
+        self.text_files = list(self.data_dir.glob("*.txt"))
+        self.csv_files = list(self.data_dir.glob("*.csv"))
+        self.image_files = list(self.data_dir.glob("*.png"))  # Assuming PNG images for this example
+
+        # You might need a more sophisticated way to match text, CSV, and image files
+        # For example, based on file naming conventions or a separate index file
+        self.data_mapping = self._create_data_mapping() 
+
+    def _create_data_mapping(self):
+        """
+        Creates a mapping between text files, CSV files, and image files.
+        This is a placeholder function that you'll need to adapt based on your data organization.
+        """
+        data_mapping = {}
+        for text_file in self.text_files:
+            base_name = text_file.stem
+            csv_file = self.data_dir / f"{base_name}.csv"
+            image_file = self.data_dir / f"{base_name}.png"  # Assumes image files have the same name
+
+            if csv_file.exists() and image_file.exists():
+                data_mapping[base_name] = {
+                    'text': text_file,
+                    'csv': csv_file,
+                    'image': image_file
+                }
+        return data_mapping
+
+    def __len__(self):
+        return len(self.data_mapping)
+
+    def __getitem__(self, idx):
+        data_entry = self.data_mapping[list(self.data_mapping.keys())[idx]]
+
+        # Load and process text data
+        with open(data_entry['text'], 'r') as f:
+            text_data = f.read()
+        text_tokens = self.config.tokenizer.tokenize(text_data)
+        text_embeds = self.config.tokenizer.embed(tokens)
+
+        # Load and process CSV data
+        csv_data = pd.read_csv(data_entry['csv'])
+        fmri_data = torch.tensor(csv_data.values, dtype=torch.float32)  # Assuming numerical data
+
+        # Load and process image data
+        image = Image.open(data_entry['image'])
+        image_tensor = self.image_transform(image)
+
+        return {
+            'text_tokens': text_tokens,
+            'text_embeds': text_embeds,
+            'fmri_data': fmri_data,
+            'image': image_tensor,
+        }
 
 class PFCModule(nn.Module):
     """
@@ -1461,8 +1531,20 @@ class ByteLatentTransformer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
-         # Initialize SELFGOAL components
+
+        activation_dict = {}  # Dictionary to store activations
+
+        def get_activation(name):
+            def hook(model, input, output):
+            activation_dict[name] = output.detach()
+            return hook
+
+        # Register forward hooks for specific layers
+        self.local_encoder['transformer'].layers[0].register_forward_hook(get_activation('encoder_layer_0'))
+        self.region_embeddings['visual'].register_forward_hook(get_activation('visual_region'))
+        # ... (register hooks for other layers/regions) #Need to change this to work with region dictionary in progam. 
+
+        # Initialize SELFGOAL components
         self.goal_manager = GoalManager(config)
         self.cot_reward = ChainOfThoughtReward(config)
         
@@ -2056,6 +2138,17 @@ def _execute_with_chain_of_thought(self, subgoals: List[str], initial_input: tor
             # Extract high-level goal from input context
             self.current_goal = self._extract_high_level_goal(x)
             self.goal_manager.initialize_tree(self.current_goal)
+
+        # Pass sensory, tactile, and audio data to the BrainRegionMapper along with other data
+        region_embeds = self.region_mapper.map_to_regions(
+            token_embeds,
+            fmri_data=brain_regions,  # Assuming this is how you pass fMRI data
+            region_texts=None,  # You might need to adjust this
+            region_images=None,  # You might need to adjust this
+            sensory_data=sensory_data,
+            tactile_data=tactile_data,
+            audio_data=audio_data
+        )
             
         # Get current context for SELFGOAL
         context = {
@@ -3604,7 +3697,132 @@ class BrainRegionMapper:
                       ) -> Dict[str, torch.Tensor]:
         """Map hierarchical text embeddings to brain regions guided by fMRI activity"""
         region_embeds = {}
-        
+
+def map_to_regions(self,
+                      text_embeds: Dict[str, torch.Tensor],
+                      fmri_data: Optional[Dict[str, torch.Tensor]] = None,
+                      region_texts: Optional[Dict[str, str]] = None,
+                      region_images: Optional[Dict[str, torch.Tensor]] = None,
+                      sensory_data: Optional[torch.Tensor] = None,
+                      tactile_data: Optional[torch.Tensor] = None,
+                      audio_data: Optional[torch.Tensor] = None
+                      ) -> Dict[str, torch.Tensor]:
+        """
+        Map hierarchical text embeddings, fMRI data, region texts, images, sensory data, tactile data, and audio data to brain regions.
+        """
+        region_embeds = {}
+
+        for region, info in self.regions.items():
+            # Initialize a list to store all relevant embeddings for the current region
+            combined_embeddings = []
+
+            # Always include text embeddings relevant to the region
+            region_text_embeds = torch.stack([
+                text_embeds[level].mean(0) for level in info['levels']
+            ]).mean(0)
+            combined_embeddings.append(region_text_embeds)
+
+            # Add fMRI data processing if available and relevant to the region
+            if fmri_data is not None and region in fmri_data:
+                region_fmri_data = fmri_data[region]
+                region_fmri_embed = self.fmri_projections[region](region_fmri_data)
+                combined_embeddings.append(region_fmri_embed)
+
+            # Add region-specific text data processing if available
+            if region_texts is not None and region in region_texts:
+                region_text = region_texts[region]
+                region_text_tokens = self.config.tokenizer.tokenize(region_text)
+                region_text_embed = self.config.tokenizer.embed(region_text_tokens)
+                region_text_embed = region_text_embed['words'].mean(dim=0)  # Example: Mean of word embeddings
+                combined_embeddings.append(region_text_embed)
+
+            # Add region-specific image data processing if available
+            if region_images is not None and region in region_images:
+                region_image = region_images[region]
+                region_image_embed = self.image_encoder(region_image.unsqueeze(0)).squeeze(0)  # Process image
+                combined_embeddings.append(region_image_embed)
+
+            # Add sensory data processing for the sensory_parietal region
+            if sensory_data is not None and region == 'sensory_parietal':
+                sensory_embed = self.region_embeddings[region](sensory_data)
+                combined_embeddings.append(sensory_embed)
+
+            # Add tactile data processing for the sensory_temporal region
+            if tactile_data is not None and region == 'sensory_temporal':
+                tactile_embed = self.region_embeddings[region](tactile_data)
+                combined_embeddings.append(tactile_embed)
+
+            # Add audio data processing if available and relevant to the region
+            if audio_data is not None and region in ['language', 'executive', 'sensory_temporal']:
+                audio_embed = self.audio_encoder(audio_data.unsqueeze(0)).squeeze(0)  # Process audio
+                combined_embeddings.append(audio_embed)
+
+            # Concatenate all collected embeddings for this region
+            combined_embedding = torch.cat(combined_embeddings, dim=-1)
+
+            # Project combined embedding to region space
+            region_embed = self.region_embeddings[region](combined_embedding)
+
+            # Apply region-specific attention (if needed)
+            # ... (You might want to add an attention mechanism here)
+
+            region_embeds[region] = region_embed
+
+        # Cross-region fusion with anatomical constraints
+        region_embeds = self._anatomically_constrained_fusion(region_embeds)
+
+        return region_embeds
+
+ def map_to_regions(self,
+                      text_embeds: Dict[str, torch.Tensor],
+                      fmri_data: Optional[torch.Tensor] = None,
+                      region_texts: Optional[Dict[str, str]] = None,
+                      region_images: Optional[Dict[str, torch.Tensor]] = None
+                      ) -> Dict[str, torch.Tensor]:
+        """Map hierarchical text embeddings, fMRI data, region texts, and images to brain regions."""
+        region_embeds = {}
+
+        #Allow the fmri scans to take image and text embeddings from labeled datasets for training. 
+        for region, info in self.regions.items():
+            # Get text embeddings for this region's levels
+            region_text_embeds = torch.stack([
+                text_embeds[level].mean(0) for level in info['levels']
+            ]).mean(0)
+
+            # Concatenate text, fMRI, and image embeddings (if available)
+            combined_embedding = region_text_embeds
+
+            if fmri_data is not None and region in fmri_data:
+                region_fmri_data = fmri_data[region]
+                region_fmri_embed = self.fmri_projections[region](region_fmri_data)
+                combined_embedding = torch.cat([combined_embedding, region_fmri_embed], dim=-1)
+
+            if region_texts is not None and region in region_texts:
+                region_text = region_texts[region]
+                region_text_tokens = self.config.tokenizer.tokenize(region_text)
+                region_text_embed = self.config.tokenizer.embed(region_text_tokens)
+                # Assuming you want to use a mean of word embeddings for the text
+                region_text_embed = region_text_embed['words'].mean(dim=0)
+                combined_embedding = torch.cat([combined_embedding, region_text_embed], dim=-1)
+
+            if region_images is not None and region in region_images:
+                region_image = region_images[region]
+                region_image_embed = self.image_encoder(region_image.unsqueeze(0)).squeeze(0)  # Add and remove batch dimension
+                combined_embedding = torch.cat([combined_embedding, region_image_embed], dim=-1)
+
+            # Project combined embedding to region space
+            region_embed = self.region_embeddings[region](combined_embedding)
+
+            # Apply region-specific attention (if needed)
+            # ...
+
+            region_embeds[region] = region_embed
+
+        # Cross-region fusion with anatomical constraints
+        region_embeds = self._anatomically_constrained_fusion(region_embeds)
+
+        return region_embeds
+
         # Process each brain region
         for region, info in self.regions.items():
             # Get text embeddings for this region's levels
@@ -4008,33 +4226,48 @@ def train(self) -> None:
       """
       Train the model using the rStar-Math self-evolution process.
       """
-      for round_num in range(1, self.config.r_star_rounds + 1):
-          self.current_round = round_num
-          print(f"Starting rStar-Math self-evolution round {round_num}...")
+              for round_num in range(1, self.config.r_star_rounds + 1):
+              self.current_round = round_num
+              print(f"Starting rStar-Math self-evolution round {round_num}...")
 
-          # 1. Data Generation (with MCTS and Subgoal Management)
-          train_data = self.generate_training_data()
+              # 1. Data Generation (with MCTS and Subgoal Management)
+              train_data = self.generate_training_data()
+              
+              # Compute embeddings for clustering evaluation
+              if train_data:
+                  embeddings = [torch.cat([ex['goal'], ex['context']], dim=-1).cpu().detach().numpy() for ex in train_data]
+                  embeddings = np.array(embeddings)
 
-          # 2. Train Policy Model (SLM)
-          print(f"Fine-tuning policy model (round {round_num})...")
-          self.fine_tune_policy_model(train_data)
+                  # Evaluate clustering quality
+                  clustering_metrics = self.model.episodic_memory.evaluate_clustering(embeddings)
 
-          # 3. Train Process Preference Model (PPM)
-          print(f"Training process preference model (round {round_num})...")
-          self.train_process_preference_model(train_data)
+                  # Log clustering metrics
+                  if self.config.use_wandb:
+                      for metric_name, metric_value in clustering_metrics.items():
+                          wandb.log({f"train/clustering/{metric_name}": metric_value, "round": round_num})
+              else:
+                  print("No training data generated for clustering evaluation.")
 
-          # 4. Evaluate and Log
-          if self.val_loader is not None:
-              print(f"Evaluating model (round {round_num})...")
-              val_metrics = self._validate()
-              # Log the validation metrics using wandb or other logging mechanism
-              if self.config.use_wandb:
-                  wandb.log({f"val/round_{round_num}/{k}": v for k, v in val_metrics.items()})
+              # 2. Train Policy Model (SLM)
+              print(f"Fine-tuning policy model (round {round_num})...")
+              self.fine_tune_policy_model(train_data)
 
-          # 5. Save Checkpoint (optional)
-          self.save_checkpoint(f'checkpoint_round_{round_num}.pt')
+              # 3. Train Process Preference Model (PPM)
+              print(f"Training process preference model (round {round_num})...")
+              self.train_process_preference_model(train_data)
 
-      print("rStar-Math self-evolution completed.")
+              # 4. Evaluate and Log
+              if self.val_loader is not None:
+                  print(f"Evaluating model (round {round_num})...")
+                  val_metrics = self._validate()
+                  # Log the validation metrics using wandb or other logging mechanism
+                  if self.config.use_wandb:
+                      wandb.log({f"val/round_{round_num}/{k}": v for k, v in val_metrics.items()})
+
+              # 5. Save Checkpoint (optional)
+              self.save_checkpoint(f'checkpoint_round_{round_num}.pt')
+
+          print("rStar-Math self-evolution completed.")
 
     def generate_training_data(self) -> List[Dict]:
         """
@@ -4142,6 +4375,67 @@ def train(self) -> None:
             num_workers=self.config.num_workers,
             pin_memory=True
         )
+
+
+    def visualize_activations_3d(self, activation_dict, region_mapping, method='pca', output_filename=None):
+        """
+        Visualizes model activations in 3D using dimensionality reduction.
+
+        Args:
+            activation_dict: Dictionary containing activations from different layers/modules.
+            region_mapping: Dictionary mapping region names to layer names.
+            method: Dimensionality reduction method ('pca', 'tsne', or 'umap').
+            output_filename: Optional filename to save the plot.
+        """
+        all_activations = []
+        all_regions = []
+
+        for region, layer_names in region_mapping.items():
+            for layer_name in layer_names:
+                if layer_name in activation_dict:
+                    # Flatten activations and append
+                    activations = activation_dict[layer_name].flatten().cpu().numpy()
+                    all_activations.append(activations)
+                    all_regions.extend([region] * len(activations))
+
+        if not all_activations:
+            print("No activations found for visualization.")
+            return
+
+        all_activations = np.stack(all_activations)
+
+        # Dimensionality reduction
+        if method == 'pca':
+            reducer = PCA(n_components=3)
+        elif method == 'tsne':
+            reducer = TSNE(n_components=3)
+        elif method == 'umap':
+            reducer = umap.UMAP(n_components=3)
+        else:
+            raise ValueError(f"Invalid dimensionality reduction method: {method}")
+
+        reduced_data = reducer.fit_transform(all_activations)
+
+        # Create a 3D scatter plot using Plotly
+        fig = go.Figure()
+
+        for region in set(all_regions):
+            indices = [i for i, r in enumerate(all_regions) if r == region]
+            fig.add_trace(go.Scatter3d(
+                x=reduced_data[indices, 0],
+                y=reduced_data[indices, 1],
+                z=reduced_data[indices, 2],
+                mode='markers',
+                marker=dict(size=5, opacity=0.8),
+                name=region
+            ))
+
+        fig.update_layout(title="3D Visualization of Brain Region Activations")
+
+        if output_filename:
+            fig.write_html(output_filename)  # Save as interactive HTML
+        else:
+            fig.show()
 
         # Set up a new optimizer and scheduler for fine-tuning
         optimizer = optim.AdamW(self.model.parameters(), lr=self.config.learning_rate / 10)  # Lower LR for fine-tuning
@@ -5410,6 +5704,8 @@ def main():
             val_loader=val_loader,
             config=config
         )
+
+
    
         #Episodic Memory Nuerogensis and Clustering occasionally activated during training. 
         if self.global_step % self.config.cluster_maintenance_interval == 0:
@@ -5423,7 +5719,12 @@ def main():
         # Train model with B-STAR
         logger.info("Starting B-STAR training...")
         trainer.train()
-        
+
+        # After each epoch or at certain intervals:
+        trainer.visualize_activations_3d(activation_dict, region_mapping, method='tsne', output_filename=f"activations_epoch_{epoch}.html")
+
+        if trainer.config.use_wandb:
+            wandb.log({"brain_activations_3d": wandb.Html(f"activations_epoch_{epoch}.html")})
         
         logger.info("Training completed successfully!")
         
@@ -5877,8 +6178,161 @@ class HierarchicalEpisodicMemory:
         else:
             raise ValueError(f"Unsupported hierarchical clustering method: {self.config.hierarchical_clustering_method}")
 
+#Removing clusters that are very similar to each other to avoid storing multiples of the same information. 
+def calculate_silhouette_score(embeddings, labels):
+    """
+    Calculates the silhouette score for the clustering.
+
+    Args:
+        embeddings: A numpy array of embeddings used for clustering.
+        labels: A numpy array of cluster labels for each embedding.
+
+    Returns:
+        The silhouette score (float).
+    """
+    if len(set(labels)) <= 1:
+        return -1  # Cannot calculate silhouette for single cluster or all noise
+
+    score = silhouette_score(embeddings, labels)
+    return score
+
+#Removing clusters that may be overfitting or underfitting and averages out clusters that are too similar or not at all related to each other. 
+def get_cluster_size_distribution(labels):
+    """
+    Calculates the distribution of cluster sizes.
+
+    Args:
+        labels: A numpy array of cluster labels.
+
+    Returns:
+        A dictionary where keys are cluster labels and values are their sizes.
+    """
+    unique, counts = np.unique(labels, return_counts=True)
+    return dict(zip(unique, counts))
+
     def __len__(self):
         return len(self.memory)
+
+def calculate_intra_cluster_similarity(embeddings, labels):
+    """
+    Calculates the average intra-cluster similarity.
+
+    Args:
+        embeddings: A numpy array of embeddings.
+        labels: A numpy array of cluster labels.
+
+    Returns:
+        The average intra-cluster similarity (float).
+    """
+    total_similarity = 0
+    count = 0
+    for cluster_label in set(labels):
+      if cluster_label == -1:
+        continue
+      cluster_indices = np.where(labels == cluster_label)[0]
+      if len(cluster_indices) > 1:
+        for i in range(len(cluster_indices)):
+            for j in range(i + 1, len(cluster_indices)):
+                similarity = F.cosine_similarity(embeddings[cluster_indices[i]].unsqueeze(0),
+                                                 embeddings[cluster_indices[j]].unsqueeze(0))
+                total_similarity += similarity.item()
+                count += 1
+    return total_similarity / count if count > 0 else 0
+
+#Measures similarity between clusters to see if the clusters are saving episodic memories properly. 
+def calculate_inter_cluster_similarity(embeddings, labels):
+    """
+    Calculates the average inter-cluster similarity.
+
+    Args:
+        embeddings: A numpy array of embeddings.
+        labels: A numpy array of cluster labels.
+
+    Returns:
+        The average inter-cluster similarity (float).
+    """
+    total_similarity = 0
+    count = 0
+    unique_labels = set(labels)
+    for label1 in unique_labels:
+        if label1 == -1:
+          continue
+        for label2 in unique_labels:
+            if label1 != label2:
+                indices1 = np.where(labels == label1)[0]
+                indices2 = np.where(labels == label2)[0]
+                for i in indices1:
+                    for j in indices2:
+                        similarity = F.cosine_similarity(embeddings[i].unsqueeze(0),
+                                                         embeddings[j].unsqueeze(0))
+                        total_similarity += similarity.item()
+                        count += 1
+    return total_similarity / count if count > 0 else 0
+
+def evaluate_clustering(self, embeddings):
+        """
+        Computes clustering quality metrics.
+        """
+        labels = self.get_cluster_labels()  # You need to implement this to get cluster labels for all experiences
+
+        if len(set(labels)) > 1:
+          metrics = {
+              'silhouette_score': calculate_silhouette_score(embeddings, labels),
+              'davies_bouldin_index': calculate_davies_bouldin_index(embeddings, labels),
+              'calinski_harabasz_index': calculate_calinski_harabasz_index(embeddings, labels),
+              'intra_cluster_similarity': calculate_intra_cluster_similarity(embeddings, labels),
+              'inter_cluster_similarity': calculate_inter_cluster_similarity(embeddings, labels),
+          }
+        else:
+          metrics = {
+            'silhouette_score': -1,
+            'davies_bouldin_index': float('inf'),
+            'calinski_harabasz_index': 0,
+            'intra_cluster_similarity': 0,
+            'inter_cluster_similarity': 0
+          }
+
+        cluster_sizes = get_cluster_size_distribution(labels)
+        metrics['cluster_size_distribution'] = cluster_sizes
+        
+        return metrics
+    
+    def get_cluster_labels(self):
+      """
+      Assigns each experience in the memory to a cluster and returns the cluster labels.
+      This method assumes that each experience is associated with a cluster ID.
+      """
+      labels = []
+      for experience in self.memory:
+        # Assuming each experience is a dictionary with a 'cluster_id' key
+        # Retrieve the cluster ID for each experience and append it to the labels list
+        cluster_id = experience.get('cluster_id')  # Use .get() to avoid KeyError if 'cluster_id' is missing
+        labels.append(cluster_id)
+
+      return np.array(labels)
+
+def visualize_brain_states(region_activations):
+    regions = []
+    activations = []
+    for region, activation_list in region_activations.items():
+      regions.append(region)
+      activations.append(torch.mean(activation_list[0]).item())
+
+    plt.figure(figsize=(10, 5))
+    sns.barplot(x=regions, y=activations)
+    plt.title("Brain Region Activations")
+    plt.ylabel("Activation Level")
+    plt.xticks(rotation=45)
+    plt.show()
+
+def get_region_activations(activation_dict, region_mapping):
+    region_activations = {}
+    for region, layer_names in region_mapping.items():
+        region_activations[region] = []
+        for layer_name in layer_names:
+            if layer_name in activation_dict:
+                region_activations[region].append(activation_dict[layer_name])
+    return region_activations
 
 if __name__ == "__main__":
     main()
