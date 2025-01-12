@@ -1358,24 +1358,69 @@ class GoalManager:
         
     def _find_subgoal_text(self, subgoal_embedding: torch.Tensor) -> Optional[str]:
         """
-        Finds the text of a subgoal based on its embedding.
-        This is a reverse lookup, which can be inefficient and might require approximate matching.
+        Finds the text of a subgoal based on its embedding using the model's decoder.
         """
-        # This is a placeholder. In a real implementation, you would need a more efficient way
-        # to map embeddings back to text, potentially using a specialized data structure or an
-        # approximate nearest neighbor search.
+        self.model.eval()  # Ensure the model is in evaluation mode
 
-        min_distance = float('inf')
-        closest_subgoal_text = None
+        with torch.no_grad():
+            # 1. Prepare Decoder Input:
+            # Start with an SOS token (if your model uses it).
+            sos_token_id = self.config.tokenizer.bos_token_id if hasattr(self.config.tokenizer, 'bos_token_id') else 0  # Replace 0 with your model's SOS token ID if it's different
+            decoder_input = torch.tensor([[sos_token_id]], dtype=torch.long, device=self.config.device)
 
-        for text, embedding in self.goal_embeddings.items():
-            distance = torch.norm(subgoal_embedding - embedding)
-            if distance < min_distance:
-                min_distance = distance
-                closest_subgoal_text = text
+            # 2. Initialize Decoder Hidden State:
+            # Use the subgoal_embedding to initialize the decoder's hidden state.
+            # You may need to adjust the dimensions based on your decoder's architecture.
+            decoder_hidden = subgoal_embedding.unsqueeze(0).unsqueeze(0)  # Add batch and sequence dimensions
+            if self.config.decoder_layers > 1:
+                decoder_hidden = decoder_hidden.repeat(self.config.decoder_layers, 1, 1)
 
-        # You might want to set a threshold on the minimum distance to consider it a match
-        return closest_subgoal_text
+            # 3. Decode with Beam Search:
+            max_length = 50  # Maximum length of the decoded subgoal (adjust as needed)
+            beam_width = 5   # Adjust as needed
+            sequences = [(decoder_input, 0.0, decoder_hidden)]  # (sequence, score, hidden_state)
+
+            for _ in range(max_length):
+                all_candidates = []
+                for seq, score, hidden in sequences:
+                    # Stop if the sequence has already generated an EOS token
+                    if seq[0, -1].item() == self.config.tokenizer.eos_token_id:
+                        all_candidates.append((seq, score, hidden))
+                        continue
+
+                    # Get the decoder output
+                    decoder_output, new_hidden = self.model.local_decoder['transformer'](seq, memory=None, hidden=hidden)
+
+                    # Get the log probabilities of the next tokens
+                    log_probs = F.log_softmax(self.model.local_decoder['output'](decoder_output), dim=-1)
+
+                    # Select the top-k candidates
+                    top_k_log_probs, top_k_indices = log_probs[0, -1, :].topk(beam_width)
+
+                    # Create new candidate sequences
+                    for i in range(beam_width):
+                        token_log_prob = top_k_log_probs[i].item()
+                        token_index = top_k_indices[i].unsqueeze(0).unsqueeze(0)
+                        new_seq = torch.cat([seq, token_index], dim=-1)
+                        new_score = score + token_log_prob
+                        all_candidates.append((new_seq, new_score, new_hidden))
+
+                # Select the top-k candidates overall
+                ordered = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)
+                sequences = ordered[:beam_width]
+
+            # Select the best sequence
+            best_sequence, _, _ = sequences[0]
+
+            # 4. Convert to Text:
+            # Convert the best sequence (token IDs) back to text using the tokenizer.
+            subgoal_text = self.config.tokenizer.decode(best_sequence.squeeze(0).tolist())
+            
+            # Remove SOS and EOS tokens from the decoded goal
+            subgoal_text = subgoal_text.replace(self.config.tokenizer.convert_ids_to_tokens(self.config.tokenizer.bos_token_id), "")  # Remove SOS token
+            subgoal_text = subgoal_text.replace(self.config.tokenizer.convert_ids_to_tokens(self.config.tokenizer.eos_token_id), "")  # Remove EOS token
+
+            return subgoal_text.strip()
         
     def _get_leaves(self, node: GoalNode) -> List[GoalNode]:
         """Recursively get all leaf nodes"""
