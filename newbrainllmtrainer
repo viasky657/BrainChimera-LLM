@@ -896,16 +896,39 @@ class GoalManager:
         self.goal_embeddings[goal_text] = embedding
         
     def _filter_similar(self, subgoals: List[str]) -> List[str]:
-        """Placeholder for filtering similar subgoals"""
-        # TODO: Replace with actual similarity check (e.g., using embeddings)
-        # Example:
-        # embeddings = compute_embeddings(subgoals, model="your_embedding_model", ...)
-        # similarity_matrix = cosine_similarity(embeddings)
-        # unique_subgoals = filter_based_on_similarity(subgoals, similarity_matrix, threshold=0.8)
-        
-        # Placeholder: return all subgoals for now
-        return subgoals
-        
+        """
+        Filters out subgoals that are too similar to each other based on their embeddings.
+        """
+        if not subgoals:
+            return []
+
+        # Retrieve embeddings for each subgoal
+        embeddings = [self.goal_embeddings.get(subgoal) for subgoal in subgoals]
+
+        # Filter out subgoals that don't have embeddings yet
+        valid_subgoals_and_embeddings = [(subgoal, embedding) for subgoal, embedding in zip(subgoals, embeddings) if embedding is not None]
+        if not valid_subgoals_and_embeddings:
+            return []
+
+        valid_subgoals, embeddings = zip(*valid_subgoals_and_embeddings)  # type: ignore
+        embeddings_tensor = torch.stack(embeddings)
+
+        # Compute cosine similarity between all pairs of embeddings
+        similarity_matrix = torch.nn.functional.cosine_similarity(
+            embeddings_tensor.unsqueeze(1),
+            embeddings_tensor.unsqueeze(0),
+            dim=2
+        )
+
+        # Filter out subgoals that are too similar to others
+        unique_subgoals = []
+        for i, subgoal in enumerate(valid_subgoals):
+            # Check if the subgoal is not too similar to any previously added unique subgoals
+            if all(similarity_matrix[i, j] < self.similarity_threshold for j in range(i)):
+                unique_subgoals.append(subgoal)
+
+        return unique_subgoals
+
    def _score_subgoals(self, subgoal_embeddings: List[torch.Tensor], context_embedding: torch.Tensor, k: int = 3, similarity_threshold: float = 0.5) -> List[float]:
     """
     Scores subgoals based on relevance, importance (retrieved from memory), and exploration.
@@ -2282,12 +2305,7 @@ class ByteLatentTransformer(nn.Module):
                     
                     # Apply activity-based gating
                     gate = torch.sigmoid(activity.mean())
-                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
-
-
-```python
-                info['levels']
-            ]).mean(0)
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_textinfo['levels']]).mean(0)
             
             # Project text to region space
             region_text_embed = self.region_embeddings[region](region_text)
