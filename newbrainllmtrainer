@@ -862,7 +862,7 @@ class GoalManager:
         # Prune low importance nodes
         self._prune_tree(self.root)
         
-    ddef get_subgoal_importance(self, subgoal_embedding: torch.Tensor) -> float:
+    def get_subgoal_importance(self, subgoal_embedding: torch.Tensor) -> float:
         """
         Retrieves the importance of a subgoal based on its embedding.
 
@@ -906,21 +906,42 @@ class GoalManager:
         # Placeholder: return all subgoals for now
         return subgoals
         
-    def _score_goals(self, goal_nodes: List[GoalNode], context: dict) -> List[float]:
-      """Score goals based on context, importance, and exploration factor."""
-      scores = []
-      for node in goal_nodes:
-          # Replace this with a more sophisticated scoring mechanism
-          # that considers the current context.
-          relevance_score = np.random.rand()  # Placeholder for context relevance
-          
-          # Encourage exploration of less-visited nodes
-          exploration_bonus = self.exploration_factor / (node.visits + 1)
-          
-          # Overall score is a combination of relevance, importance, and exploration
-          score = (relevance_score * node.importance) + exploration_bonus
-          scores.append(score)
-      return scores
+   def _score_subgoals(self, subgoal_embeddings: List[torch.Tensor], context_embedding: torch.Tensor, k: int = 3, similarity_threshold: float = 0.5) -> List[float]:
+    """
+    Scores subgoals based on relevance, importance (retrieved from memory), and exploration.
+    Uses k-nearest neighbors and a similarity threshold for importance retrieval.
+    """
+    scores = []
+    for subgoal_embedding in subgoal_embeddings:
+        # Combine subgoal and context embeddings for relevance scoring
+        combined = torch.cat([subgoal_embedding, context_embedding], dim=-1)
+        # Get a relevance score from the scoring module
+        relevance_score = self.subgoal_scorer(combined.unsqueeze(0)).squeeze().item()
+
+        # Retrieve importance from memory using k-nearest neighbors and similarity threshold
+        importance = 1.0  # Default importance
+        if self.memory_pool.memory_states.numel() > 0:
+            distances = torch.norm(self.memory_pool.memory_states - subgoal_embedding.unsqueeze(0), dim=1)
+            closest_indices = torch.topk(distances, k, largest=False).indices  # Get indices of k closest
+
+            neighbor_importances = []
+            weights = []
+            for idx in closest_indices:
+                if distances[idx] < similarity_threshold:  # Only consider neighbors within the threshold
+                    neighbor_importances.append(self.memory_pool.state_importance[idx].item())
+                    weights.append(1 / (distances[idx].item() + 1e-8))  # Inverse distance weighting
+
+            if neighbor_importances:
+                importance = np.average(neighbor_importances, weights=weights)
+
+        # Encourage exploration of less-visited nodes
+        exploration_bonus = self.config.exploration_factor / (node.visits + 1)
+
+        # Combine to get the final score
+        score = relevance_score * importance + exploration_bonus
+        scores.append(score)
+
+    return scores
         
     def _get_leaves(self, node: GoalNode) -> List[GoalNode]:
         """Recursively get all leaf nodes"""
