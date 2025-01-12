@@ -12,6 +12,7 @@ import numpy as np
 from tqdm import tqdm
 import wandb
 import matplotlib.pyplot as plt
+from sklearn.metrics import silhouette_score
 from mpl_toolkits.mplot3d import Axes3D
 from dataclasses import dataclass
 import torchvision.transforms as transforms
@@ -2996,7 +2997,30 @@ class TrainingConfig:
         mcts_expansion_factor: int = 8,          # Number of candidate nodes to explore at each MCTS step
         mcts_c: float = 2.0,                  # Exploration constant in the UCT formula
         code_cot_verification: bool = True,   # Flag to enable code-augmented CoT and verification
-        
+
+       # Episodic Memory Parameters
+        episodic_memory_capacity: int = 1000,
+        memory_cluster_method: str = 'hdbscan',
+        hdbscan_min_cluster_size: int = 5,
+        hdbscan_metric: str = 'euclidean',
+        hdbscan_cluster_selection_epsilon: float = 0.0,
+        som_grid_size: int = 10,
+        som_input_dim: int = 1024,  # Adjust based on your embedding size
+        som_sigma: float = 1.0,
+        som_learning_rate: float = 0.5,
+        cluster_relevance_threshold: float = 0.7,
+        cluster_centroid_update_freq: int = 10,
+        max_cluster_size: int = 50,
+        merge_similarity_threshold: float = 0.9,
+        enable_cluster_maintenance: bool = True,
+        cluster_maintenance_interval: int = 100,
+        hierarchical_clustering_method: str = 'hdbscan',
+        memory_importance_decay: float = 0.99,
+        expansion_threshold: float = 0.2,
+        num_retrieve_memories: int = 5,
+        expansion_check_interval: int = 100,
+        max_neurons: int = 10000,
+
         # Goal Manager parameters
         max_goals: int = 5,
         min_importance: float = 0.1,
@@ -3022,6 +3046,29 @@ class TrainingConfig:
         self.min_temperature = min_temperature
         self.temperature_decay = temperature_decay
         self.similarity_threshold = similarity_threshold
+
+        # Episodic memory parameters
+        self.episodic_memory_capacity = episodic_memory_capacity
+        self.memory_cluster_method = memory_cluster_method
+        self.hdbscan_min_cluster_size = hdbscan_min_cluster_size
+        self.hdbscan_metric = hdbscan_metric
+        self.hdbscan_cluster_selection_epsilon = hdbscan_cluster_selection_epsilon
+        self.som_grid_size = som_grid_size
+        self.som_input_dim = som_input_dim
+        self.som_sigma = som_sigma
+        self.som_learning_rate = som_learning_rate
+        self.cluster_relevance_threshold = cluster_relevance_threshold
+        self.cluster_centroid_update_freq = cluster_centroid_update_freq
+        self.max_cluster_size = max_cluster_size
+        self.merge_similarity_threshold = merge_similarity_threshold
+        self.enable_cluster_maintenance = enable_cluster_maintenance
+        self.cluster_maintenance_interval = cluster_maintenance_interval
+        self.hierarchical_clustering_method = hierarchical_clustering_method
+        self.memory_importance_decay = memory_importance_decay
+        self.expansion_threshold = expansion_threshold
+        self.num_retrieve_memories = num_retrieve_memories
+        self.expansion_check_interval = expansion_check_interval
+        self.max_neurons = max_neurons
 
         distillation_config: Optional[Dict[str, Any]] = {
             'enabled': True,
@@ -3910,6 +3957,10 @@ class BrainRegionMapper:
         self.relative_threshold = relative_threshold
         self.min_patch_size = min_patch_size
         self.max_patch_size = max_patch_size
+
+#start the background training for the clustering episodic memory nuerogensis. 
+trainer = BrainAwareBLTTrainer(model=model, train_loader=train_loader, val_loader=val_loader, config=config)
+trainer.model.episodic_memory.start_clustering_thread()
 
 class BrainAwareBLTTrainer:
     """Trainer for brain-aware BLT model"""
@@ -4821,6 +4872,32 @@ def train(self) -> None:
             'grad_max': grad_max,
             'grad_clip_ratio': grad_clip_ratio
         }
+
+      # Optionally, update the episodic memory
+    if self.config.use_episodic_memory:
+        # Example of storing an experience (adapt to your specific scenario)
+        self.model.store_experience(
+            goal=goal_embedding,
+            context=context_embedding,
+            subgoals=subgoal_embeddings,  # Assuming these are available
+            actions=actions,  # Assuming you have a way to track actions
+            rewards=rewards,
+            reflection=reflection_text if reflection_needed else None
+        )
+
+        # Example of retrieving memories
+        retrieved_memories = self.model.retrieve_memories(goal_embedding, context_embedding, num_memories=5)
+
+        # Perform sparse updates based on retrieved memories
+        self.model.sparse_update(retrieved_memories)
+
+        # Update memory importance (e.g., with time decay)
+        self.model.update_memory_importance()
+
+        # Check for network expansion triggers
+        if self.global_step % self.config.expansion_check_interval == 0:
+            self.model.monitor_activations('subgoal_generator')
+
         
         # Safely convert tensor metrics to float values
         for key, value in grad_metrics.items():
@@ -5261,7 +5338,7 @@ def main():
             warmup_steps=1000,
             max_steps=args.max_steps,
             gradient_clip=1.0,
-            
+
             # Loss settings
             reconstruction_weight=1.0,  # Weight for fMRI reconstruction loss
             region_prediction_weight=0.5,  # Weight for brain region prediction loss
@@ -5333,6 +5410,10 @@ def main():
             val_loader=val_loader,
             config=config
         )
+   
+        #Episodic Memory Nuerogensis and Clustering occasionally activated during training. 
+        if self.global_step % self.config.cluster_maintenance_interval == 0:
+            self.model.episodic_memory.perform_cluster_maintenance()
         
         # Resume from checkpoint if specified
         if args.resume:
@@ -5342,6 +5423,7 @@ def main():
         # Train model with B-STAR
         logger.info("Starting B-STAR training...")
         trainer.train()
+        
         
         logger.info("Training completed successfully!")
         
@@ -5404,6 +5486,399 @@ def load_fmri_data(data_dir: Path, smooth_kernel: int = 3, min_activity: float =
     fmri_data = torch.cat(fmri_data, dim=0)
     
     return fmri_data
+
+#Long-Term Episodic Memory below for updating Parameters with new data or removing similar old data. 
+
+class HierarchicalEpisodicMemory:
+    def __init__(self, capacity, config, cluster_method='hdbscan'):
+        self.capacity = capacity
+        self.memory = []  # List to store experiences
+        self.cluster_method = cluster_method
+        self.position = 0
+        self.config = config
+        self.next_cluster_id = 0  # Initialize a counter for cluster IDs
+        self.clusterer = None  # Placeholder for the clustering model
+        self.cluster_map = {}  # Map cluster IDs to experience indices
+        self.current_neuron_count = 0  # Keeps track of the number of neurons
+        self.cluster_centroids = {}  # Store cluster centroids
+        self.cluster_members = {}  # Store cluster members
+        self.hierarchy = {}  # Store the hierarchy of clusters
+
+        # Threading for background clustering
+        self.clustering_thread = None
+        self.stop_clustering_thread = False
+        self.data_queue = Queue()
+
+        if self.cluster_method == 'hdbscan':
+            self.clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=config.hdbscan_min_cluster_size,
+                metric=config.hdbscan_metric,
+                cluster_selection_epsilon=config.hdbscan_cluster_selection_epsilon,
+                prediction_data=True
+            )
+        elif self.cluster_method == 'som':
+            self.som = MiniSom(x=config.som_grid_size, y=config.som_grid_size, input_len=config.som_input_dim,
+                               sigma=config.som_sigma, learning_rate=config.som_learning_rate)
+
+    def push(self, experience):
+        """Adds an experience to the memory and assigns it to a cluster."""
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = experience
+        self.position = (self.position + 1) % self.capacity
+
+        # Add the experience to the data queue for background clustering
+        self.data_queue.put(experience)
+
+    def start_clustering_thread(self):
+        """Starts the background clustering thread."""
+        if self.clustering_thread is None or not self.clustering_thread.is_alive():
+            self.stop_clustering_thread = False
+            self.clustering_thread = threading.Thread(target=self.background_clustering)
+            self.clustering_thread.daemon = True  # Allow program to exit even if thread is running
+            self.clustering_thread.start()
+
+    def stop_clustering_thread(self):
+        """Stops the background clustering thread."""
+        self.stop_clustering_thread = True
+        if self.clustering_thread is not None and self.clustering_thread.is_alive():
+            self.clustering_thread.join()
+
+    def background_clustering(self):
+      """
+      Performs clustering in the background.
+      """
+      while not self.stop_clustering_thread:
+          try:
+              experience = self.data_queue.get(timeout=1)  # Wait for 1 second for new data
+              if experience is not None:
+                  self.cluster_experience(experience)
+                  self.data_queue.task_done()
+          except queue.Empty:
+              # If the queue is empty, check for cluster maintenance
+              if self.config.enable_cluster_maintenance:
+                  self.perform_cluster_maintenance()
+              continue  # Continue to the next iteration to check stop condition
+          except Exception as e:
+              print(f"Error during background clustering: {e}")
+              # Handle other potential errors during clustering or maintenance
+
+    def cluster_experience(self, experience):
+        """Clusters the experience based on goal/context embeddings using the specified method."""
+        goal_context_embedding = torch.cat([experience['goal'], experience['context']], dim=-1).cpu().detach().numpy()
+
+        if self.cluster_method == 'hdbscan':
+            self.update_hdbscan_clustering(goal_context_embedding, experience)
+        elif self.cluster_method == 'som':
+            self.perform_som_clustering(goal_context_embedding)
+        else:
+            self.perform_kmeans_clustering(experience, goal_context_embedding)
+
+        # Check if it's time to perform cluster maintenance
+        if self.config.enable_cluster_maintenance and len(self.memory) % self.config.cluster_maintenance_interval == 0:
+            self.perform_cluster_maintenance()
+
+    def update_hdbscan_clustering(self, new_embedding, experience):
+        """
+        Updates the HDBSCAN clustering with a new data point (embedding).
+        """
+        # Check if the clusterer has been fitted with data before
+        if self.clusterer.labels_ is None:
+            # Fit the clusterer with the initial data point
+            self.clusterer.fit(new_embedding.reshape(1, -1))
+            # Assign the first cluster ID (0 or -1 for noise)
+            cluster_id = self.clusterer.labels_[0] if self.clusterer.labels_[0] != -1 else self.next_cluster_id
+            if cluster_id == self.next_cluster_id:
+                self.next_cluster_id += 1
+        else:
+            # Update the clusterer with the new data point
+            cluster_id = hdbscan.prediction.approximate_predict(self.clusterer, [new_embedding])[0][0]
+
+        # Assign the experience to the appropriate cluster
+        if cluster_id not in self.clusters:
+            self.clusters[cluster_id] = {'members': []}
+        self.clusters[cluster_id]['members'].append(experience)
+
+        # Update cluster centroids (if needed)
+        self.update_cluster_centroids()
+
+    def perform_som_clustering(self, goal_context_embedding: torch.Tensor):
+        """
+        Assigns the experience to a cluster based on SOM.
+        """
+        # Train SOM with the new embedding
+        self.som.train_batch(goal_context_embedding.unsqueeze(0).cpu().numpy(), num_iteration=1)
+
+        # Find the best matching unit (BMU) for the new experience
+        bmu = self.som.winner(goal_context_embedding.cpu().numpy())
+
+        # Assign the experience to the cluster corresponding to the BMU
+        cluster_id = str(bmu)  # Convert tuple to string to use as dictionary key
+        if cluster_id not in self.clusters:
+            self.clusters[cluster_id] = {'centroid': goal_context_embedding, 'members': []}
+
+        self.clusters[cluster_id]['members'].append(self.memory[self.position - 1])
+
+        # Update the centroid of the cluster (simple average for demonstration)
+        cluster_embeddings = [torch.cat([mem['goal'], mem['context']], dim=-1) for mem in
+                              self.clusters[cluster_id]['members']]
+        self.clusters[cluster_id]['centroid'] = torch.stack(cluster_embeddings).mean(dim=0)
+
+    def update_cluster_centroids(self):
+        """
+        Updates the centroids of all clusters based on their current members.
+        """
+        for cluster_id, cluster_data in self.clusters.items():
+            if cluster_data['members']:
+                # Recalculate the centroid as the mean of all member embeddings
+                member_embeddings = [torch.cat([mem['goal'], mem['context']], dim=-1) for mem in cluster_data['members']]
+                new_centroid = torch.stack(member_embeddings).mean(dim=0)
+                self.clusters[cluster_id]['centroid'] = new_centroid
+
+    def perform_kmeans_clustering(self, experience, goal_context_embedding):
+      """Assigns the experience to the nearest cluster based on k-means."""
+      if not self.clusters:
+          # Initialize with the first experience
+          self.clusters[self.next_cluster_id] = {'centroid': goal_context_embedding, 'members': [experience]}
+          self.next_cluster_id += 1
+      else:
+          # Find the closest cluster centroid
+          min_dist = float('inf')
+          closest_cluster_id = None
+          for cluster_id, cluster_data in self.clusters.items():
+              dist = torch.norm(goal_context_embedding - cluster_data['centroid'])
+              if dist < min_dist:
+                  min_dist = dist
+                  closest_cluster_id = cluster_id
+
+          # Add the experience to the closest cluster
+          self.clusters[closest_cluster_id]['members'].append(experience)
+
+          # Recompute the centroid (you might want to do this periodically, not every time)
+          if len(self.clusters[closest_cluster_id]['members']) % self.config.cluster_centroid_update_freq == 0:
+              cluster_embeddings = [torch.cat([mem['goal'], mem['context']], dim=-1) for mem in
+                                    self.clusters[closest_cluster_id]['members']]
+              self.clusters[closest_cluster_id]['centroid'] = torch.stack(cluster_embeddings).mean(dim=0)
+
+    def retrieve(self, goal: torch.Tensor, context: torch.Tensor, num_memories: int):
+      """
+      Retrieves relevant memories based on the current goal and context using a hierarchical approach.
+      """
+      # 1. Find relevant cluster(s) based on goal and context
+      relevant_cluster_ids = self.find_relevant_clusters(goal, context)
+
+      # 2. Retrieve memories from the relevant clusters
+      relevant_memories = []
+      for cluster_id in relevant_cluster_ids:
+          relevant_memories.extend(self.clusters[cluster_id]['members'])
+
+      # 3. Rank memories by similarity to the current goal and context
+      if relevant_memories:
+          goal_context_embedding = torch.cat([goal, context], dim=-1)
+          memory_embeddings = torch.stack([torch.cat([m['goal'], m['context']], dim=-1) for m in relevant_memories])
+          similarity_scores = F.cosine_similarity(goal_context_embedding.unsqueeze(0), memory_embeddings, dim=1)
+
+          # Sort memories by similarity score (descending order)
+          sorted_indices = torch.argsort(similarity_scores, descending=True)
+          sorted_memories = [relevant_memories[i] for i in sorted_indices]
+
+          # Select the top-k most similar memories
+          selected_memories = sorted_memories[:num_memories]
+      else:
+          selected_memories = []
+
+      return selected_memories
+
+    def find_relevant_clusters(self, goal: torch.Tensor, context: torch.Tensor) -> List[int]:
+      """
+      Finds clusters relevant to the current goal and context based on embedding similarity.
+      """
+      goal_context_embedding = torch.cat([goal, context], dim=-1)
+      relevant_clusters = []
+
+      for cluster_id, cluster_data in self.clusters.items():
+          # Calculate cosine similarity between the combined goal-context embedding
+          # and the cluster centroid
+          similarity = F.cosine_similarity(
+              goal_context_embedding,
+              cluster_data['centroid'].unsqueeze(0),
+              dim=1
+          )
+
+          # If similarity is above a threshold, consider it relevant
+          if similarity.item() > self.config.cluster_relevance_threshold:
+              relevant_clusters.append(cluster_id)
+
+      # If no clusters are found, return the closest cluster (fallback)
+      if not relevant_clusters:
+          min_dist = float('inf')
+          closest_cluster_id = None
+          for cluster_id, cluster_data in self.clusters.items():
+              dist = torch.norm(goal_context_embedding - cluster_data['centroid'])
+              if dist < min_dist:
+                  min_dist = dist
+                  closest_cluster_id = cluster_id
+          relevant_clusters.append(closest_cluster_id)
+
+      return relevant_clusters
+    
+    def get_k_nearest_memories(self, query_embedding: torch.Tensor, k: int) -> List[Dict]:
+        """
+        Retrieves the k nearest memories to the given query embedding based on cosine similarity.
+        """
+        if not self.memory:
+            return []
+
+        # Calculate cosine similarity between query embedding and all memory embeddings
+        memory_embeddings = torch.stack([torch.cat([m['goal'], m['context']], dim=-1) for m in self.memory])
+        similarities = F.cosine_similarity(query_embedding.unsqueeze(0), memory_embeddings, dim=1)
+
+        # Get indices of the k most similar memories
+        _, top_indices = torch.topk(similarities, k)
+
+        # Retrieve the corresponding memories
+        nearest_memories = [self.memory[i.item()] for i in top_indices]
+
+        return nearest_memories
+    
+    def perform_cluster_maintenance(self):
+        """
+        Performs maintenance on the clusters, such as splitting large clusters,
+        merging similar clusters, and creating a hierarchy of clusters.
+        """
+        if not self.clusters:
+            return
+        
+        # Split large clusters if necessary
+        max_cluster_size = self.config.max_cluster_size
+        for cluster_id, cluster_data in list(self.clusters.items()):
+            if len(cluster_data['members']) > max_cluster_size:
+                self.split_cluster(cluster_id)
+        
+        # Merge similar clusters if necessary
+        self.merge_similar_clusters(self.config.merge_similarity_threshold)
+        
+        # Create a hierarchy of clusters
+        self.create_cluster_hierarchy()
+    
+    def split_cluster(self, cluster_id: int):
+      """
+      Splits a large cluster into smaller clusters.
+      """
+      if cluster_id not in self.clusters:
+          print(f"Cluster {cluster_id} not found.")
+          return
+      
+      cluster_members = self.clusters[cluster_id]['members']
+      num_members = len(cluster_members)
+
+      if num_members < 2:
+        print(f"Cluster {cluster_id} has too few members to split.")
+        return
+
+      # Use a simple clustering algorithm like KMeans for splitting
+      embeddings = [torch.cat([m['goal'], m['context']], dim=-1).cpu().numpy() for m in cluster_members]
+      embeddings = np.array(embeddings)  # Convert list of embeddings to a NumPy array
+
+      n_clusters = min(num_members, max(2, int(num_members / self.config.max_cluster_size)))  # Example heuristic
+      kmeans = KMeans(n_clusters=n_clusters)
+
+      try:
+          kmeans.fit(embeddings)
+      except ValueError as e:
+          print(f"Error during KMeans fitting: {e}")
+          print(f"Number of samples: {embeddings.shape[0]}, number of features: {embeddings.shape[1]}")
+          return
+
+      new_cluster_ids = [self.next_cluster_id + i for i in range(n_clusters)]
+      self.next_cluster_id += n_clusters
+
+      # Create new clusters
+      for new_id in new_cluster_ids:
+          self.clusters[new_id] = {'centroid': None, 'members': []}
+
+      # Assign members to new clusters based on KMeans labels
+      for i, member in enumerate(cluster_members):
+          new_cluster_id = new_cluster_ids[kmeans.labels_[i]]
+          self.clusters[new_cluster_id]['members'].append(member)
+
+      # Remove the old cluster
+      del self.clusters[cluster_id]
+
+      # Update centroids for new clusters
+      self.update_cluster_centroids()
+
+    def merge_similar_clusters(self, threshold: float):
+        """
+        Merges clusters that are similar based on a similarity threshold.
+        """
+        cluster_ids = list(self.clusters.keys())
+        if len(cluster_ids) < 2:
+          return
+        
+        merged = [False] * len(cluster_ids)  # Keep track of which clusters have been merged
+        
+        for i, cluster_id1 in enumerate(cluster_ids):
+          if merged[i]:
+              continue  # Skip if already part of a merged cluster
+          for j, cluster_id2 in enumerate(cluster_ids[i+1:], start=i+1):
+              if merged[j]:
+                  continue  # Skip if already part of a merged cluster
+              
+              # Calculate cosine similarity between centroids
+              centroid1 = self.clusters[cluster_id1]['centroid']
+              centroid2 = self.clusters[cluster_id2]['centroid']
+              similarity = F.cosine_similarity(centroid1.unsqueeze(0), centroid2.unsqueeze(0))
+              
+              if similarity.item() > threshold:
+                # Merge cluster2 into cluster1
+                self.clusters[cluster_id1]['members'].extend(self.clusters[cluster_id2]['members'])
+                
+                # Update centroid of cluster1
+                cluster_embeddings = [torch.cat([mem['goal'], mem['context']], dim=-1) for mem in
+                                      self.clusters[cluster_id1]['members']]
+                self.clusters[cluster_id1]['centroid'] = torch.stack(cluster_embeddings).mean(dim=0)
+
+                # Mark cluster2 as merged
+                merged[j] = True
+
+        # Remove merged clusters (those marked as True in merged list)
+        for i in range(len(merged) - 1, -1, -1):
+            if merged[i]:
+                del self.clusters[cluster_ids[i]]
+
+    def create_cluster_hierarchy(self):
+        """
+        Creates a hierarchy of clusters using a chosen clustering algorithm (e.g., HDBSCAN).
+        """
+        # Extract all current cluster centroids
+        centroid_embeddings = [data['centroid'] for data in self.clusters.values()]
+        centroid_embeddings_np = torch.stack(centroid_embeddings).cpu().detach().numpy()
+
+        if self.config.hierarchical_clustering_method == 'hdbscan':
+            # Apply HDBSCAN for hierarchical clustering
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=self.config.hdbscan_min_cluster_size,
+                metric=self.config.hdbscan_metric,
+                cluster_selection_epsilon=self.config.hdbscan_cluster_selection_epsilon,
+                prediction_data=True
+            )
+            clusterer.fit(centroid_embeddings_np)
+            labels = clusterer.labels_
+
+            # Organize the hierarchy
+            self.hierarchy = {}
+            for cluster_id, label in zip(self.clusters.keys(), labels):
+                if label != -1:  # Ignore noise points
+                    if label not in self.hierarchy:
+                        self.hierarchy[label] = []
+                    self.hierarchy[label].append(cluster_id)
+
+        else:
+            raise ValueError(f"Unsupported hierarchical clustering method: {self.config.hierarchical_clustering_method}")
+
+    def __len__(self):
+        return len(self.memory)
 
 if __name__ == "__main__":
     main()
