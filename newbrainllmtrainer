@@ -22,12 +22,41 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+import contextlib
+from typing import Dict
 import umap
 import plotly.graph_objects as go
 
 system_prompt="You are a well-trained AI assistant. ## Important!!!!!!!!! When you answer questions, your thinking should be completed in <Thought><Thought> xml tags, and your results should be output in <Output><Output> xml tags as well as be in English as much as possible, 
 but there are 2 exceptions to responses being in English, one is the reference to the original text, and the other is that mathematics should use markdown format, and the output in needs to follow the language of the user input. ## Important!!!!!! 
 You have the ability to make function calls in .json pair formatting, so be sure to put all function calls in the <Tool><Tool> xml tags when you need to use a tool to answer a question outside of your knowledge or to preform an action."
+
+''' #The user feedback function for an actual implementation of the llm. This will do nothing for this training file. This is just here as a placeholder for implementation of the final llm. 
+def get_user_feedback(self, reasoning_step: Dict) -> Optional[str]:
+      """
+      Gets feedback from the user about the current reasoning step.
+
+      This is a placeholder function. In a real application, you would need to implement a mechanism
+      to collect feedback from the user during the interaction (e.g., through a chat interface).
+
+      Args:
+          reasoning_step: The current reasoning step.
+
+      Returns:
+          Optional feedback string (e.g., "dislike", "remember", or None).
+      """
+      # In a real application, you would get feedback from the user here
+      # For example, you could ask the user if they liked the step, if it was helpful, etc.
+      # And then map their response to a feedback string like "dislike", "remember", or None
+
+      # Placeholder: Simulate user feedback (remove this in a real application)
+      if random.random() < 0.1:  # 10% chance of getting feedback
+          if random.random() < 0.5:
+              return "dislike"
+          else:
+              return "remember"
+      return None
+'''
 
 #Dataset fMRI Preparation. 
 class fMRIDataset(Dataset):
@@ -1878,6 +1907,15 @@ def _execute_with_chain_of_thought(self, subgoals: List[str], initial_input: tor
 
         # Update the current output with the result of the subgoal execution
         current_output = subgoal_output['hidden_states']  # Assuming 'hidden_states' contains the relevant output
+
+        # Update user profile based on the interaction (if a user ID is provided)
+            if user_id is not None:
+                # Collect feedback from user (if available) - This is a placeholder
+                # You might need a mechanism to get feedback from the user during the interaction
+                feedback = self.get_user_feedback(reasoning_steps[-1])
+
+                # Update the user profile with the feedback
+                self.update_user_profile(user_id, reasoning_steps, self._encode_goals([subgoal]), self._encode_context(context), feedback)
 
         # Track the reasoning step for CoT reward computation
         reasoning_steps.append({
@@ -4896,6 +4934,341 @@ def train(self) -> None:
             }
             for k, v in batch.items()
         }
+
+def _train_step(self, batch: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, float]:
+    """Train one step with episodic memory updates and brain region-specific processing."""
+    self.optimizer.zero_grad()
+
+    # Move batch to device
+    batch = {
+        k: {
+            k2: v2.to(self.config.device) if isinstance(v2, torch.Tensor) else v2
+            for k2, v2 in v.items()
+        }
+        for k, v in batch.items()
+    }
+
+ # Forward pass with activation collection
+    activation_dict = {} # The audio, image, fmri, audio, decoder with the text being below. It needs to the properly integrated into the training step with placeholder removed. 
+    attention_patterns = {}
+    hooks = []
+    for name, module in self.model.named_modules():
+        if isinstance(module, (nn.ReLU, nn.Linear, nn.LayerNorm, nn.MultiheadAttention)):
+            hooks.append(
+                module.register_forward_hook(
+                    lambda mod, inp, out, name=name: self._hook_fn(mod, inp, out, name, activation_dict, attention_patterns)
+                )
+            )
+
+    # Classify if instruction is fact-based
+    instruction = batch['instruction'][0] if isinstance(batch['instruction'], list) else batch['instruction']
+    self.model.is_fact_based = self._classify_fact_based(instruction)
+
+    # Forward pass with all data modalities
+    outputs = self.model(
+        batch['tokens']['bytes'],
+        goal_context=None,
+        brain_regions=batch.get('region_embeds'),
+        rnn_states=None,
+        sensory_data=batch.get('sensory_data'),
+        tactile_data=batch.get('tactile_data'),
+        audio_data=batch.get('audio_data'),
+        image_data=batch.get('image_data')
+    )
+
+    # Remove hooks
+    for hook in hooks:
+        hook.remove()
+
+    # Compute hierarchical loss
+    loss = self._compute_hierarchical_loss(outputs, batch)
+
+    # Add specific loss for sensory/tactile training if needed
+    if self.current_round == 'sensory_tactile_training':
+        loss += self._compute_sensory_tactile_loss(outputs, batch)
+
+    # Backward pass
+    loss.backward()
+
+    # Calculate per-layer gradient statistics
+    layer_grads = {}
+    for name, param in self.model.named_parameters():
+        if param.grad is not None:
+            layer_name = name.split('.')[-2] if len(name.split('.')) > 1 else name
+            grad = param.grad.detach()
+            layer_grads[layer_name] = {
+                'mean': grad.mean().item(),
+                'std': grad.std().item(),
+                'min': grad.min().item(),
+                'max': grad.max().item(),
+                'norm': torch.norm(grad).item(),
+                'sparsity': (grad == 0).float().mean().item()
+            }
+
+            # Gradient clipping
+            if self.config.gradient_clip > 0:
+                grad_norm_before = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.gradient_clip
+                )
+                grad_norm_after = torch.norm(param.grad.detach())
+
+                metrics = {
+                    'grad_norm_before_clip': grad_norm_before.item(),
+                    'grad_norm_after_clip': grad_norm_after.item(),
+                    'grad_clip_ratio': grad_norm_after.item() / (grad_norm_before.item() + 1e-8)
+                }
+
+                metrics.update({
+                    f'grad_{k}': v for k, v in layer_grads.items()
+                })
+
+    # Step optimizer
+    self.optimizer.step()
+    self.scheduler.step()
+
+    # Update episodic memory
+    if self.config.use_episodic_memory:
+        main_goal = self._extract_high_level_goal(batch['tokens']['bytes'])
+        context = {
+            'input': batch['tokens']['bytes'],
+            'brain_regions': batch.get('region_embeds'),
+            'step': self.global_step
+        }
+        subgoals = self.model._decompose_and_select_subgoals(main_goal, context)
+
+        if 'reasoning_steps' in outputs and outputs['reasoning_steps']:
+            final_output, reasoning_steps, final_reward = self.model._execute_with_chain_of_thought(subgoals, batch['tokens']['bytes'])
+
+            self.model.store_experience(main_goal, context, subgoals, reasoning_steps, final_reward)
+            self.model.goal_manager.update_tree(final_reward)
+            retrieved_memories = self.model.retrieve_memories(main_goal, context, num_memories=self.config.num_retrieve_memories)
+            self.model.sparse_update(retrieved_memories)
+            self.model.update_memory_importance()
+
+            if self.global_step % self.config.expansion_check_interval == 0:
+                self.model.monitor_activations('subgoal_generator')
+        else:
+            print("Warning: No reasoning steps found in model output.")
+
+    # Compute metrics
+    metrics = self._compute_metrics(outputs, batch, loss.item())
+    metrics.update({
+        'grad_norm': grad_norm_before.item() if 'grad_norm_before_clip' in locals() else 0.0,
+        'grad_mean': torch.mean(torch.stack([
+            param.grad.mean()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item(),
+        'grad_std': torch.std(torch.stack([
+            param.grad.std()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item(),
+        'grad_min': torch.min(torch.stack([
+            param.grad.min()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item(),
+        'grad_max': torch.max(torch.stack([
+            param.grad.max()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item()
+    })
+
+    # Add the hook function to the class
+    def _hook_fn(self, module, input, output, name, activation_dict, attention_patterns):
+        # Your existing hook logic
+        pass
+
+    # Add the compute_loss_from_memory method to the class
+    def compute_loss_from_memory(self, memory):
+      """
+      Computes a loss based on a retrieved memory.
+      This is a placeholder that you need to adapt based on the nature of your memories and your training objectives.
+      """
+      if memory['type'] == 'subgoal_generation':
+          # Example: MSE loss between generated subgoal and memory subgoal
+          generated_subgoal = self.subgoal_generator(torch.cat([memory['goal'], memory['context']], dim=-1))
+          target_subgoal = memory['subgoal']
+          loss = nn.MSELoss()(generated_subgoal, target_subgoal)
+
+      elif memory['type'] == 'action_selection':
+          # Example: Cross-entropy loss for action prediction
+          # This requires adapting the model to output action probabilities
+          # and having a way to compute the "correct" action from the memory
+          logits = self.model(memory['context'])  # Assuming your model can take context and produce logits
+          target_action = memory['action']  # This would need to be the index of the correct action
+          loss = F.cross_entropy(logits, target_action)
+
+      else:
+          raise ValueError(f"Unknown memory type: {memory['type']}")
+
+      return loss
+
+    return metrics
+
+    # Forward pass with activation collection
+    activation_dict = {}
+    attention_patterns = {}
+    hooks = []
+    for name, module in self.model.named_modules():
+        if isinstance(module, (nn.ReLU, nn.Linear, nn.LayerNorm, nn.MultiheadAttention)):
+            hooks.append(
+                module.register_forward_hook(
+                    lambda mod, inp, out, name=name: self._hook_fn(mod, inp, out, name, activation_dict, attention_patterns)
+                )
+            )
+
+    # Classify if instruction is fact-based
+    instruction = batch['instruction'][0] if isinstance(batch['instruction'], list) else batch['instruction']
+    self.model.is_fact_based = self._classify_fact_based(instruction)
+
+    # Forward pass with all data modalities
+    outputs = self.model(
+        batch['tokens']['bytes'],
+        goal_context=None,
+        brain_regions=batch.get('region_embeds'),
+        rnn_states=None,
+        sensory_data=batch.get('sensory_data'),
+        tactile_data=batch.get('tactile_data'),
+        audio_data=batch.get('audio_data'),
+        image_data=batch.get('image_data')
+    )
+
+    # Remove hooks
+    for hook in hooks:
+        hook.remove()
+
+    # Compute hierarchical loss
+    loss = self._compute_hierarchical_loss(outputs, batch)
+
+    # Add specific loss for sensory/tactile training if needed
+    if self.current_round == 'sensory_tactile_training':
+        loss += self._compute_sensory_tactile_loss(outputs, batch)
+
+    # Backward pass
+    loss.backward()
+
+    # Calculate per-layer gradient statistics
+    layer_grads = {}
+    for name, param in self.model.named_parameters():
+        if param.grad is not None:
+            layer_name = name.split('.')[-2] if len(name.split('.')) > 1 else name
+            grad = param.grad.detach()
+            layer_grads[layer_name] = {
+                'mean': grad.mean().item(),
+                'std': grad.std().item(),
+                'min': grad.min().item(),
+                'max': grad.max().item(),
+                'norm': torch.norm(grad).item(),
+                'sparsity': (grad == 0).float().mean().item()
+            }
+
+            # Gradient clipping
+            if self.config.gradient_clip > 0:
+                grad_norm_before = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.gradient_clip
+                )
+                grad_norm_after = torch.norm(param.grad.detach())
+
+                metrics = {
+                    'grad_norm_before_clip': grad_norm_before.item(),
+                    'grad_norm_after_clip': grad_norm_after.item(),
+                    'grad_clip_ratio': grad_norm_after.item() / (grad_norm_before.item() + 1e-8)
+                }
+
+                metrics.update({
+                    f'grad_{k}': v for k, v in layer_grads.items()
+                })
+
+    # Step optimizer
+    self.optimizer.step()
+    self.scheduler.step()
+
+    # Update episodic memory
+    if self.config.use_episodic_memory:
+        main_goal = self._extract_high_level_goal(batch['tokens']['bytes'])
+        context = {
+            'input': batch['tokens']['bytes'],
+            'brain_regions': batch.get('region_embeds'),
+            'step': self.global_step
+        }
+        subgoals = self.model._decompose_and_select_subgoals(main_goal, context)
+
+        if 'reasoning_steps' in outputs and outputs['reasoning_steps']:
+            final_output, reasoning_steps, final_reward = self.model._execute_with_chain_of_thought(subgoals, batch['tokens']['bytes'])
+
+            self.model.store_experience(main_goal, context, subgoals, reasoning_steps, final_reward)
+            self.model.goal_manager.update_tree(final_reward)
+            retrieved_memories = self.model.retrieve_memories(main_goal, context, num_memories=self.config.num_retrieve_memories)
+            self.model.sparse_update(retrieved_memories)
+            self.model.update_memory_importance()
+
+            if self.global_step % self.config.expansion_check_interval == 0:
+                self.model.monitor_activations('subgoal_generator')
+        else:
+            print("Warning: No reasoning steps found in model output.")
+
+    # Compute metrics
+    metrics = self._compute_metrics(outputs, batch, loss.item())
+    metrics.update({
+        'grad_norm': grad_norm_before.item() if 'grad_norm_before_clip' in locals() else 0.0,
+        'grad_mean': torch.mean(torch.stack([
+            param.grad.mean()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item(),
+        'grad_std': torch.std(torch.stack([
+            param.grad.std()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item(),
+        'grad_min': torch.min(torch.stack([
+            param.grad.min()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item(),
+        'grad_max': torch.max(torch.stack([
+            param.grad.max()
+            for param in self.model.parameters()
+            if param.grad is not None
+        ])).item()
+    })
+
+    # Add the hook function to the class
+    def _hook_fn(self, module, input, output, name, activation_dict, attention_patterns):
+        # Your existing hook logic
+        pass
+
+    # Add the compute_loss_from_memory method to the class
+    def compute_loss_from_memory(self, memory):
+      """
+      Computes a loss based on a retrieved memory.
+      This is a placeholder that you need to adapt based on the nature of your memories and your training objectives.
+      """
+      if memory['type'] == 'subgoal_generation':
+          # Example: MSE loss between generated subgoal and memory subgoal
+          generated_subgoal = self.subgoal_generator(torch.cat([memory['goal'], memory['context']], dim=-1))
+          target_subgoal = memory['subgoal']
+          loss = nn.MSELoss()(generated_subgoal, target_subgoal)
+
+      elif memory['type'] == 'action_selection':
+          # Example: Cross-entropy loss for action prediction
+          # This requires adapting the model to output action probabilities
+          # and having a way to compute the "correct" action from the memory
+          logits = self.model(memory['context'])  # Assuming your model can take context and produce logits
+          target_action = memory['action']  # This would need to be the index of the correct action
+          loss = F.cross_entropy(logits, target_action)
+
+      else:
+          raise ValueError(f"Unknown memory type: {memory['type']}")
+
+      return loss
+
+    return metrics
         
         # Forward pass with activation collection
         activation_dict = {}
