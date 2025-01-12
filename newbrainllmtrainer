@@ -18,6 +18,10 @@ import torchvision.transforms as transforms
 import torchaudio
 import torch.nn.functional as F
 
+system_prompt="You are a well-trained AI assistant. ## Important!!!!!!!!! When you answer questions, your thinking should be completed in <Thought><Thought> xml tags, and your results should be output in <Output><Output> xml tags as well as be in English as much as possible, 
+but there are 2 exceptions to responses being in English, one is the reference to the original text, and the other is that mathematics should use markdown format, and the output in needs to follow the language of the user input. ## Important!!!!!! 
+You have the ability to make function calls in .json pair formatting, so be sure to put all function calls in the <Tool><Tool> xml tags when you need to use a tool to answer a question outside of your knowledge or to preform an action."
+
 class PFCModule(nn.Module):
     """
     PFC Module for inhibitory control, suppressing unwanted actions or memories.
@@ -1471,7 +1475,12 @@ class ByteLatentTransformer(nn.Module):
             compression_ratio=0.5,
             diversity_threshold=0.3
         )
-        
+
+        # Add parameters for MCTS
+        self.mcts_rollouts = config.initial_mcts_rollouts
+        self.mcts_expansion_factor = config.mcts_expansion_factor
+        self.mcts_c = config.mcts_c
+
         # Subgoal Generation Module
         self.subgoal_generator = nn.Sequential(
             nn.Linear(config.d_model * 2, config.d_model),  # Project combined state to subgoal space
@@ -1496,8 +1505,56 @@ class ByteLatentTransformer(nn.Module):
             nn.Linear(config.d_model, 1),  # Output relevance score
             nn.Sigmoid()  # Scale to [0, 1]
         )
+
+ def set_mcts_params(self, rollouts: int, expansion_factor: int, c: float):
+        """Sets the parameters for MCTS."""
+        self.mcts_rollouts = rollouts
+        self.mcts_expansion_factor = expansion_factor
+        self.mcts_c = c
+
+    def set_temperature(self, temperature: float):
+      """Sets the temperature for goal selection in the GoalManager."""
+      self.goal_manager.temperature = temperature
     
-    # ... other methods ...
+    def save_checkpoint(self, filename: str) -> None:
+        """Save checkpoint"""
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'global_step': self.global_step,
+            'best_val_loss': self.best_val_loss,
+            'config': self.config,
+            'goal_manager_state_dict': self.goal_manager.get_state_dict(),
+            'memory_pool_state_dict': self.memory_pool.get_state_dict()
+        }
+        
+        save_path = self.config.checkpoint_dir / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(checkpoint, save_path)
+    
+    def load_checkpoint(self, checkpoint_path: Path):
+        """Load checkpoint - modified to load goal manager and memory pool"""
+        checkpoint = torch.load(checkpoint_path, map_location=self.config.device)
+        
+        # Load model
+        self.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load optimizer
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Load scheduler
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Load training state
+        self.global_step = checkpoint['global_step']
+        self.best_val_loss = checkpoint['best_val_loss']
+
+        # Load GoalManager state
+        self.goal_manager.load_state_dict(checkpoint['goal_manager_state_dict'])
+
+        # Load MemoryPool state
+        self.memory_pool.load_state_dict(checkpoint['memory_pool_state_dict'])
 
     def _generate_subgoals(self, goal_embedding: torch.Tensor, context_embedding: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -1705,94 +1762,85 @@ class ByteLatentTransformer(nn.Module):
 
       return selected_subgoals
 
-    def _execute_with_chain_of_thought(self, subgoals: List[str], initial_input: torch.Tensor) -> Tuple[torch.Tensor, List[Dict]]:
-      """
-      Executes a sequence of subgoals using a Chain-of-Thought approach, where each subgoal
-      builds upon the results of the previous one. Includes self-reflection and backtracking.
+def _execute_with_chain_of_thought(self, subgoals: List[str], initial_input: torch.Tensor) -> Tuple[torch.Tensor, List[Dict]]:
+    """
+    Executes a sequence of subgoals using a Chain-of-Thought approach, where each subgoal
+    builds upon the results of the previous one. Includes self-reflection and backtracking.
+    """
+    current_output = initial_input
+    reasoning_steps = []
+    
+    # Add context and memory to initial input
+    combined_input = initial_input
+    if hasattr(self, 'memory_pool'):
+        memory_states = self.memory_pool.get_states()
+        if memory_states.numel() > 0:
+            combined_input = torch.cat([combined_input, memory_states], dim=0)
+    
+    for subgoal in subgoals:
+        # Update the current goal for this step
+        self.current_goal = subgoal
 
-      Args:
-          subgoals: A list of subgoals to be executed in order.
-          initial_input: The initial input tensor to the model.
+        # Prepare the context for this subgoal, which includes the current output 
+        # from the previous steps and any other relevant information
+        context = {
+            'input': combined_input,
+            'step': len(reasoning_steps) + 1  # Indicate the current step number
+        }
 
-      Returns:
-          The final output tensor after executing all subgoals in a Chain-of-Thought manner.
-          A list of dictionaries representing the reasoning steps.
-      """
-      current_output = initial_input
-      reasoning_steps = []
-      
-      # Add context and memory to initial input
-      combined_input = initial_input
-      if hasattr(self, 'memory_pool'):
-          memory_states = self.memory_pool.get_states()
-          if memory_states.numel() > 0:
-              combined_input = torch.cat([combined_input, memory_states], dim=0)
-      
-      for subgoal in subgoals:
-          # Update the current goal for this step
-          self.current_goal = subgoal
+        # Execute the current subgoal
+        # This involves encoding the subgoal, processing it through the model,
+        # and updating the current output with the result
+        subgoal_output = self.forward(combined_input, goal_context=self._encode_goals([subgoal]))
 
-          # Prepare the context for this subgoal, which includes the current output 
-          # from the previous steps and any other relevant information
-          context = {
-              'input': combined_input,
-              'step': len(reasoning_steps) + 1  # Indicate the current step number
-          }
+        # Update the current output with the result of the subgoal execution
+        current_output = subgoal_output['hidden_states']  # Assuming 'hidden_states' contains the relevant output
 
-          # Execute the current subgoal
-          # This involves encoding the subgoal, processing it through the model,
-          # and updating the current output with the result
-          subgoal_output = self.forward(combined_input, goal_context=self._encode_goals([subgoal]))
+        # Track the reasoning step for CoT reward computation
+        reasoning_steps.append({
+            'type': 'subgoal_execution',
+            'goal': subgoal,
+            'input': combined_input.detach(),  # Detach to avoid tracking unnecessary computations
+            'output': subgoal_output['hidden_states'].detach()
+        })
 
-          # Update the current output with the result of the subgoal execution
-          current_output = subgoal_output['hidden_states']  # Assuming 'hidden_states' contains the relevant output
+        # Compute confidence scores for this step
+        with torch.no_grad():
+            logits = self.local_decoder['output'](subgoal_output['hidden_states'])
+            confidence = self.cot_reward.compute_confidence_score(logits)
+            reasoning_steps[-1]['confidence'] = confidence.mean().item()
 
-          # Track the reasoning step for CoT reward computation
-          reasoning_steps.append({
-              'type': 'subgoal_execution',
-              'goal': subgoal,
-              'input': combined_input.detach(),  # Detach to avoid tracking unnecessary computations
-              'output': subgoal_output['hidden_states'].detach()
-          })
+        # Reflection step:
+        reflection_needed = self.metacognitive(current_output, memory_states)['needs_reflection'] if hasattr(self, 'metacognitive') else False
+        if reflection_needed:
+            # Generate a reflection
+            reflection = self.metacognitive(current_output, memory_states)['reflection']
+            
+            # Backtrack to a previous step based on reflection - this is a simplification
+            # In a more complex scenario, you might want to revisit specific subgoals or steps
+            # based on the nature of the reflection.
+            if len(reasoning_steps) > 1:
+                previous_step = reasoning_steps.pop()  # Remove the last step
+                current_output = previous_step['input']  # Reset to the input of the previous step
+                
+                # Add the reflection to the reasoning steps
+                reasoning_steps.append({
+                    'type': 'reflection',
+                    'reflection': reflection.detach(),
+                    'previous_output': previous_step['output']
+                })
 
-          # Compute confidence scores for this step
-          with torch.no_grad():
-              logits = self.local_decoder['output'](subgoal_output['hidden_states'])
-              confidence = self.cot_reward.compute_confidence_score(logits)
-              reasoning_steps[-1]['confidence'] = confidence.mean().item()
+        # Update combined input for the next subgoal, including the current output and memory states
+        combined_input = current_output
+        if hasattr(self, 'memory_pool'):
+            memory_states = self.memory_pool.get_states()
+            if memory_states.numel() > 0:
+                combined_input = torch.cat([combined_input, memory_states], dim=0)
 
-          # Reflection step:
-          reflection_needed = self.metacognitive(current_output, memory_states)['needs_reflection'] if hasattr(self, 'metacognitive') else False
-          if reflection_needed:
-              # Generate a reflection
-              reflection = self.metacognitive(current_output, memory_states)['reflection']
-              
-              # Backtrack to a previous step based on reflection - this is a simplification
-              # In a more complex scenario, you might want to revisit specific subgoals or steps
-              # based on the nature of the reflection.
-              if len(reasoning_steps) > 1:
-                  previous_step = reasoning_steps.pop()  # Remove the last step
-                  current_output = previous_step['input']  # Reset to the input of the previous step
-                  
-                  # Add the reflection to the reasoning steps
-                  reasoning_steps.append({
-                      'type': 'reflection',
-                      'reflection': reflection.detach(),
-                      'previous_output': previous_step['output']
-                  })
+    # After executing all subgoals, compute the final CoT reward based on the entire reasoning path
+    final_reward = self.cot_reward.compute_reward(torch.stack([step['output'] for step in reasoning_steps if 'output' in step]))
 
-          # Update combined input for the next subgoal, including the current output and memory states
-          combined_input = current_output
-          if hasattr(self, 'memory_pool'):
-              memory_states = self.memory_pool.get_states()
-              if memory_states.numel() > 0:
-                  combined_input = torch.cat([combined_input, memory_states], dim=0)
-
-      # After executing all subgoals, compute the final CoT reward based on the entire reasoning path
-      final_reward = self.cot_reward.compute_reward(torch.stack([step['output'] for step in reasoning_steps if 'output' in step]))
-
-      return current_output, reasoning_steps, final_reward
-        
+    return current_output, reasoning_steps, final_reward
         # N-gram hash embeddings
         self.hash_embeddings = nn.ModuleDict({
             f'ngram_{n}': nn.Embedding(config.hash_vocab_size, config.d_model)
@@ -2035,7 +2083,15 @@ class ByteLatentTransformer(nn.Module):
           # If goal_context is not provided, encode the selected goals
           goal_context = self._encode_goals(selected_goals)
           byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
-        
+
+        # Concatenate system prompt embeddings to byte embeddings
+        if 'system_prompt' in x:
+            system_prompt_embeds = x['system_prompt']['embeds']
+            byte_embeds = torch.cat([system_prompt_embeds, byte_embeds], dim=1)  # Concatenate along the sequence length dimension
+            
+            # Adjust sequence length to account for the system prompt
+            seq_len += system_prompt_embeds.size(1)
+
         # Add n-gram hash embeddings with CoT tracking
         for n in range(3, 9):  # n-grams from 3 to 8 as in paper
             # Create n-grams
@@ -2525,6 +2581,7 @@ class MultimodalBrainAwareDataset(Dataset):
         self.fmri_window = fmri_window
         self.fmri_patch_size = fmri_patch_size
         self.n_parcels = n_parcels
+        self.system_prompt = system_prompt
         
         # fMRI processing components
         self.fmri_compressor = nn.Linear(fmri_data.shape[-1], n_parcels) if fmri_data is not None else None
@@ -2623,7 +2680,7 @@ class MultimodalBrainAwareDataset(Dataset):
             self._paragraph_summarization,
             self._paragraph_expansion
         ]
-    
+
     def _apply_hierarchical_augmentation(
         self,
         text: str,
@@ -2846,6 +2903,11 @@ class MultimodalBrainAwareDataset(Dataset):
     def __getitem__(self, idx):
         # Get raw data
         text = self.text_data[idx]
+
+        # Add system prompt to tokens and token_embeds
+        tokens['system_prompt'] = self.tokenizer.tokenize(self.system_prompt)
+        token_embeds['system_prompt'] = self.tokenizer.embed(tokens['system_prompt'])
+
         
         # Process fMRI data if available
         if self.fmri_data is not None:
@@ -2915,7 +2977,8 @@ class MultimodalBrainAwareDataset(Dataset):
             'fmri_tokens_masked': fmri_tokens_masked,
             'fmri_encoded': encoded,
             'fmri_decoded': decoded,
-            'fmri_recon_loss': recon_loss
+            'fmri_recon_loss': recon_loss,
+            'system_prompt': system_prompt
         }
 
 class TrainingConfig:
@@ -2926,6 +2989,40 @@ class TrainingConfig:
         num_workers: int = 4,
         learning_rate: float = 1e-4,
         num_epochs: int = 100,
+        # rStar-Math parameters
+        r_star_rounds: int = 4,                # Number of self-evolution rounds
+        initial_mcts_rollouts: int = 16,      # Initial number of MCTS rollouts per problem
+        increased_mcts_rollouts: int = 64,   # Increased number of MCTS rollouts for challenging problems
+        mcts_expansion_factor: int = 8,          # Number of candidate nodes to explore at each MCTS step
+        mcts_c: float = 2.0,                  # Exploration constant in the UCT formula
+        code_cot_verification: bool = True,   # Flag to enable code-augmented CoT and verification
+        
+        # Goal Manager parameters
+        max_goals: int = 5,
+        min_importance: float = 0.1,
+        exploration_factor: float = 0.5,
+        initial_temperature: float = 1.0,
+        min_temperature: float = 0.1,
+        temperature_decay: float = 0.99,
+        similarity_threshold: float = 0.85,
+
+        # rStar-Math parameters
+        self.r_star_rounds = r_star_rounds
+        self.initial_mcts_rollouts = initial_mcts_rollouts
+        self.increased_mcts_rollouts = increased_mcts_rollouts
+        self.mcts_expansion_factor = mcts_expansion_factor
+        self.mcts_c = mcts_c
+        self.code_cot_verification = code_cot_verification
+        
+        # Goal Manager parameters
+        self.max_goals = max_goals
+        self.min_importance = min_importance
+        self.exploration_factor = exploration_factor
+        self.initial_temperature = initial_temperature
+        self.min_temperature = min_temperature
+        self.temperature_decay = temperature_decay
+        self.similarity_threshold = similarity_threshold
+
         distillation_config: Optional[Dict[str, Any]] = {
             'enabled': True,
             'temperature': 2.0,        # Temperature for softening distributions
@@ -3827,7 +3924,15 @@ class BrainAwareBLTTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.config = config or TrainingConfig()
-        
+
+        # Add these lines to store optimizer and scheduler state dicts
+        self.optimizer_state_dict = None
+        self.scheduler_state_dict = None
+
+        # Add variables to track self-evolution
+        self.current_round = 0  # Start with round 0
+        self.model.goal_manager.set_model(self.model)
+
         # Move model to device
         self.model = self.model.to(self.config.device)
         
@@ -3847,6 +3952,325 @@ class BrainAwareBLTTrainer:
         self.global_step = 0
         self.best_val_loss = float('inf')
         self.epochs_without_improvement = 0
+
+def train(self) -> None:
+      """
+      Train the model using the rStar-Math self-evolution process.
+      """
+      for round_num in range(1, self.config.r_star_rounds + 1):
+          self.current_round = round_num
+          print(f"Starting rStar-Math self-evolution round {round_num}...")
+
+          # 1. Data Generation (with MCTS and Subgoal Management)
+          train_data = self.generate_training_data()
+
+          # 2. Train Policy Model (SLM)
+          print(f"Fine-tuning policy model (round {round_num})...")
+          self.fine_tune_policy_model(train_data)
+
+          # 3. Train Process Preference Model (PPM)
+          print(f"Training process preference model (round {round_num})...")
+          self.train_process_preference_model(train_data)
+
+          # 4. Evaluate and Log
+          if self.val_loader is not None:
+              print(f"Evaluating model (round {round_num})...")
+              val_metrics = self._validate()
+              # Log the validation metrics using wandb or other logging mechanism
+              if self.config.use_wandb:
+                  wandb.log({f"val/round_{round_num}/{k}": v for k, v in val_metrics.items()})
+
+          # 5. Save Checkpoint (optional)
+          self.save_checkpoint(f'checkpoint_round_{round_num}.pt')
+
+      print("rStar-Math self-evolution completed.")
+
+    def generate_training_data(self) -> List[Dict]:
+        """
+        Generates training data using MCTS with step-by-step verification and subgoal management.
+        """
+        generated_data = []
+
+        # Update MCTS parameters for this round
+        if self.current_round == 1:
+          self.model.set_mcts_params(
+            rollouts=self.config.initial_mcts_rollouts,
+            expansion_factor=self.config.mcts_expansion_factor,
+            c=self.config.mcts_c
+          )
+        elif self.current_round < self.config.r_star_rounds:
+          self.model.set_mcts_params(
+            rollouts=self.config.initial_mcts_rollouts,
+            expansion_factor=self.config.mcts_expansion_factor,
+            c=self.config.mcts_c
+          )
+        else:
+          self.model.set_mcts_params(
+            rollouts=self.config.increased_mcts_rollouts,
+            expansion_factor=self.config.mcts_expansion_factor,
+            c=self.config.mcts_c
+          )
+
+        # Set the temperature for goal selection in GoalManager (for exploration-exploitation balance)
+        self.model.set_temperature(self.config.initial_temperature)
+
+        for batch_idx, batch in enumerate(tqdm(self.train_loader, desc=f"Generating data (round {self.current_round})")):
+            # Move batch to device
+            batch = {
+                k: {
+                    k2: v2.to(self.config.device) if isinstance(v2, torch.Tensor) else v2
+                    for k2, v2 in v.items()
+                }
+                for k, v in batch.items()
+            }
+
+            # Extract the main goal from the input batch
+            main_goal = self.model._extract_high_level_goal(batch['tokens']['bytes'])
+
+            # Decompose the main goal into subgoals and select relevant ones
+            context = {
+                'input': batch['tokens']['bytes'],  # Using byte-level tokens as context
+                'brain_regions': batch.get('region_embeds'),  # Include brain region data if available
+                'step': self.global_step  # You can use the global step as part of the context
+            }
+            subgoals = self.model._decompose_and_select_subgoals(main_goal, context)
+
+            # Execute subgoals with Chain-of-Thought and get the final output and reasoning steps
+            final_output, reasoning_steps, final_reward = self.model._execute_with_chain_of_thought(subgoals, batch['tokens']['bytes'])
+            
+            # Store the experience in episodic memory
+            self.model.store_experience(main_goal, context, subgoals, reasoning_steps, final_reward)
+
+            # Update the goal tree based on the final reward
+            self.model.goal_manager.update_tree(final_reward)
+
+            # Here you would convert the reasoning steps into a suitable format for training
+            # For example, format the steps into a sequence of text for SFT
+            for step in reasoning_steps:
+                # Format the step into training data
+                # This is a placeholder for how you might convert a step into a training example
+                example = self.format_reasoning_step_as_training_example(step)
+                generated_data.append(example)
+
+        return generated_data
+
+    def format_reasoning_step_as_training_example(self, step: Dict) -> Dict:
+        """
+        Formats a reasoning step from the MCTS into a training example.
+        This is a placeholder function that you'll need to adapt based on how you want to
+        structure your training data.
+        """
+        # Example: Convert a step into an input-output pair for supervised fine-tuning
+        input_text = f"Goal: {step['goal']}\nContext: {step['input']}\n"
+        
+        if 'output' in step:
+            output_text = f" -> {step['output']}"  # The actual reasoning step taken
+        elif 'reflection' in step:
+            output_text = f" -> Reflection: {step['reflection']}"
+        else:
+            output_text = ""
+
+        return {
+            'input': input_text,
+            'output': output_text,
+            'reward': step.get('reward', 0.0)  # You might have a reward associated with the step
+        }
+
+    def fine_tune_policy_model(self, train_data: List[Dict]):
+        """
+        Fine-tunes the policy model using the generated training data.
+        """
+        # Convert the generated data into a suitable dataset format
+        dataset = self.create_dataset_from_examples(train_data)
+
+        # Create a DataLoader for the dataset
+        data_loader = DataLoader(
+            dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            num_workers=self.config.num_workers,
+            pin_memory=True
+        )
+
+        # Set up a new optimizer and scheduler for fine-tuning
+        optimizer = optim.AdamW(self.model.parameters(), lr=self.config.learning_rate / 10)  # Lower LR for fine-tuning
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.95)  # Example scheduler
+
+        # Fine-tuning loop
+        self.model.train()
+        for epoch in range(self.config.num_epochs):
+            for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Fine-tuning policy model (epoch {epoch+1})")):
+                # Move batch to device
+                batch = {k: v.to(self.config.device) for k, v in batch.items()}
+
+                # Forward pass
+                outputs = self.model(batch)  # Adapt this based on your model's forward method
+
+                # Compute loss
+                loss = self._compute_loss(outputs, batch)  # You might need a specialized loss function
+
+                # Backward pass and optimization
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+
+                # Log metrics
+                if self.config.use_wandb:
+                    wandb.log({
+                        f"train/fine_tune/round_{self.current_round}/loss": loss.item(),
+                        f"train/fine_tune/round_{self.current_round}/epoch": epoch,
+                        f"train/fine_tune/round_{self.current_round}/step": self.global_step
+                    })
+
+                self.global_step += 1
+
+    def create_dataset_from_examples(self, examples: List[Dict]) -> Dataset:
+        """
+        Creates a PyTorch Dataset from a list of training examples.
+        You'll need to implement this based on the structure of your training examples.
+        """
+        # This is a placeholder function. You'll need to implement the actual logic
+        # to convert your examples into a format that can be used by a PyTorch Dataset.
+
+        # Example: Assuming your examples are dictionaries with 'input' and 'output' keys
+        inputs = [ex['input'] for ex in examples]
+        outputs = [ex['output'] for ex in examples]
+
+        # Tokenize the inputs and outputs
+        tokenized_inputs = self.config.tokenizer(inputs, padding=True, truncation=True, return_tensors="pt")
+        tokenized_outputs = self.config.tokenizer(outputs, padding=True, truncation=True, return_tensors="pt")
+
+        # Create a TensorDataset
+        dataset = torch.utils.data.TensorDataset(
+            tokenized_inputs['input_ids'],
+            tokenized_inputs['attention_mask'],
+            tokenized_outputs['input_ids'],
+            tokenized_outputs['attention_mask']
+        )
+
+        return dataset
+
+    def _compute_loss(self, outputs: Dict, batch: Dict) -> torch.Tensor:
+        """
+        Computes the loss for fine-tuning the policy model.
+        You'll need to implement this based on your model's outputs and the structure of your training data.
+        """
+        # This is a placeholder function. You might need to use a different loss function
+        # depending on how you've structured your training data.
+
+        # Example: Assuming a sequence-to-sequence setup with a language modeling objective
+        logits = outputs['logits']  # Assuming your model outputs logits
+        labels = batch['output_ids']  # Assuming you have a 'output_ids' tensor in your batch
+
+        # Flatten the logits and labels for the CrossEntropyLoss
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return loss
+
+    def train_process_preference_model(self, train_data: List[Dict]):
+        """
+        Trains the Process Preference Model (PPM) using the generated training data.
+        """
+        # Convert the generated data into a suitable dataset format for PPM training
+        # You might need to create pairs of trajectories or steps for preference learning
+        dataset = self.create_ppm_dataset_from_examples(train_data)
+
+        # Create a DataLoader for the dataset
+        data_loader = DataLoader(
+            dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            num_workers=self.config.num_workers,
+            pin_memory=True
+        )
+
+        # Assuming you have a separate optimizer for the PPM
+        optimizer = optim.AdamW(self.model.process_preference_model.parameters(), lr=self.config.learning_rate / 10)  # Lower LR for PPM
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.95)
+
+        # PPM training loop
+        self.model.process_preference_model.train()
+        for epoch in range(self.config.num_epochs):
+            for batch_idx, batch in enumerate(tqdm(data_loader, desc=f"Training PPM (epoch {epoch+1})")):
+                # Move batch to device
+                batch = {k: v.to(self.config.device) for k, v in batch.items()}
+
+                # Forward pass through the PPM
+                outputs = self.model.process_preference_model(batch)
+
+                # Compute the PPM loss (e.g., pairwise ranking loss)
+                loss = self._compute_ppm_loss(outputs, batch)  # Implement this based on your PPM
+
+                # Backward pass and optimization
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+
+                # Log metrics
+                if self.config.use_wandb:
+                    wandb.log({
+                        f"train/ppm/round_{self.current_round}/loss": loss.item(),
+                        f"train/ppm/round_{self.current_round}/epoch": epoch,
+                        f"train/ppm/round_{self.current_round}/step": self.global_step
+                    })
+
+                self.global_step += 1
+
+    def create_ppm_dataset_from_examples(self, examples: List[Dict]) -> Dataset:
+        """
+        Creates a dataset suitable for training the Process Preference Model (PPM).
+        This might involve creating pairs of trajectories or steps for preference learning.
+        """
+        # Placeholder for creating a dataset for PPM training
+        # You need to adapt this based on how your PPM is designed and what kind of input it expects
+
+        # Example: Create preference pairs from trajectories with different rewards
+        preference_pairs = []
+        for example in examples:
+            if len(example['reasoning_steps']) >= 2:  # Need at least 2 steps to create a pair
+                # This is a simplified example. You might want to use more sophisticated criteria
+                # for selecting pairs based on rewards, confidence scores, etc.
+                step1 = example['reasoning_steps'][0]
+                step2 = example['reasoning_steps'][-1]  # Compare the first and last steps
+
+                if step1['reward'] > step2['reward']:
+                    preference_pairs.append((step1, step2))  # step1 is preferred over step2
+                elif step2['reward'] > step1['reward']:
+                    preference_pairs.append((step2, step1))  # step2 is preferred over step1
+
+        # Convert the preference pairs into a format that can be used by a PyTorch Dataset
+        # You might need to tokenize the steps, pad sequences, etc.
+        inputs = [self.config.tokenizer(pair[0]['input'], pair[0]['output'], padding=True, truncation=True, return_tensors="pt") for pair in preference_pairs]
+        labels = [1 if pair[0]['reward'] > pair[1]['reward'] else 0 for pair in preference_pairs]  # Binary preference labels
+
+        # Create a TensorDataset
+        dataset = torch.utils.data.TensorDataset(
+            torch.stack([inp['input_ids'].squeeze() for inp in inputs]),
+            torch.stack([inp['attention_mask'].squeeze() for inp in inputs]),
+            torch.tensor(labels, dtype=torch.long)
+        )
+
+        return dataset
+
+    def _compute_ppm_loss(self, outputs: Dict, batch: Dict) -> torch.Tensor:
+        """
+        Computes the loss for training the Process Preference Model (PPM).
+        This is a placeholder function. You'll need to implement the actual loss calculation
+        based on your PPM's architecture and training objective.
+        """
+        # Example: Pairwise ranking loss (e.g., from the "Learning to Rank" literature)
+        # Assuming your PPM outputs a score for each input and the batch contains pairs of inputs
+        # where the first element is preferred over the second
+
+        scores = outputs['scores']  # Assuming your PPM outputs a 'scores' tensor
+        labels = batch['labels']  # Assuming you have a 'labels' tensor indicating preference (e.g., 1 for first element preferred, 0 otherwise)
+
+        # Calculate the pairwise ranking loss
+        loss = F.binary_cross_entropy_with_logits(scores, labels.float())
+
+        return loss
     
     def _setup_logging(self) -> None:
         """Setup logging"""
