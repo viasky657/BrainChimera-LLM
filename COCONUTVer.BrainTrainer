@@ -1,0 +1,3662 @@
+```python
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset
+from pathlib import Path
+import argparse
+import logging
+import json
+from typing import Dict, List, Optional, Tuple, Union, Any
+import numpy as np
+from tqdm import tqdm
+import wandb
+import matplotlib.pyplot as plt
+from sklearn.metrics import silhouette_score
+from mpl_toolkits.mplot3d import Axes3D
+from dataclasses import dataclass
+import torchvision.transforms as transforms
+import torchaudio
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+import contextlib
+from typing import Dict
+import umap
+import plotly.graph_objects as go
+
+system_prompt="You are a well-trained AI assistant. ## Important!!!!!!!!! When you answer questions, your thinking should be completed in a latent space and then be decoded into English, 
+but there are 2 exceptions to responses being in English, one is the reference to the original text, and the other is that mathematics should use markdown format, and the output in needs to follow the language of the user input. ## Important!!!!!! 
+You have the ability to make function calls in .json pair formatting, so be sure to put all function calls in the <Tool><Tool> xml tags when you need to use a tool to answer a question outside of your knowledge or to preform an action."
+
+''' #The user feedback function for an actual implementation of the llm. This will do nothing for this training file. This is just here as a placeholder for implementation of the final llm. 
+def get_user_feedback(self, reasoning_step: Dict) -> Optional[str]:
+      """
+      Gets feedback from the user about the current reasoning step.
+
+      This is a placeholder function. In a real application, you would need to implement a mechanism
+      to collect feedback from the user during the interaction (e.g., through a chat interface).
+
+      Args:
+          reasoning_step: The current reasoning step.
+
+      Returns:
+          Optional feedback string (e.g., "dislike", "remember", or None).
+      """
+      # In a real application, you would get feedback from the user here
+      # For example, you could ask the user if they liked the step, if it was helpful, etc.
+      # And then map their response to a feedback string like "dislike", "remember", or None
+
+      # Placeholder: Simulate user feedback (remove this in a real application)
+      if random.random() < 0.1:  # 10% chance of getting feedback
+          if random.random() < 0.5:
+              return "dislike"
+          else:
+              return "remember"
+      return None
+'''
+
+#Dataset fMRI Preparation. 
+class fMRIDataset(Dataset):
+    def __init__(self, data_dir: str, config: TrainingConfig, image_transform=None):
+        self.data_dir = Path(data_dir)
+        self.config = config
+        self.image_transform = image_transform or transforms.Compose([
+            transforms.Resize((224, 224)),  # Resize images to a standard size
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Example normalization
+        ])
+        self.text_files = list(self.data_dir.glob("*.txt"))
+        self.csv_files = list(self.data_dir.glob("*.csv"))
+        self.image_files = list(self.data_dir.glob("*.png"))  # Assuming PNG images for this example
+
+        # You might need a more sophisticated way to match text, CSV, and image files
+        # For example, based on file naming conventions or a separate index file
+        self.data_mapping = self._create_data_mapping() 
+
+    def _create_data_mapping(self):
+        """
+        Creates a mapping between text files, CSV files, and image files.
+        This is a placeholder function that you'll need to adapt based on your data organization.
+        """
+        data_mapping = {}
+        for text_file in self.text_files:
+            base_name = text_file.stem
+            csv_file = self.data_dir / f"{base_name}.csv"
+            image_file = self.data_dir / f"{base_name}.png"  # Assumes image files have the same name
+
+            if csv_file.exists() and image_file.exists():
+                data_mapping[base_name] = {
+                    'text': text_file,
+                    'csv': csv_file,
+                    'image': image_file
+                }
+        return data_mapping
+
+    def __len__(self):
+        return len(self.data_mapping)
+
+    def __getitem__(self, idx):
+        data_entry = self.data_mapping[list(self.data_mapping.keys())[idx]]
+
+        # Load and process text data
+        with open(data_entry['text'], 'r') as f:
+            text_data = f.read()
+        text_tokens = self.config.tokenizer.tokenize(text_data)
+        text_embeds = self.config.tokenizer.embed(text_tokens)
+
+        # Load and process CSV data
+        csv_data = pd.read_csv(data_entry['csv'])
+        fmri_data = torch.tensor(csv_data.values, dtype=torch.float32)  # Assuming numerical data
+
+        # Load and process image data
+        image = Image.open(data_entry['image'])
+        image_tensor = self.image_transform(image)
+
+        return {
+            'text_tokens': text_tokens,
+            'text_embeds': text_embeds,
+            'fmri_data': fmri_data,
+            'image': image_tensor,
+        }
+
+class SafetyDataset(Dataset): #Processes Safety datasets from folders for the PFC safety network. This is a placeholder and does not need to be fleshed out yet. 
+    def __init__(self, data_files, tokenizer, context_window, transform=None):
+        """
+        Args:
+            data_files (list): List of paths to the data files.
+            tokenizer: Tokenizer for encoding text.
+            context_window (int): Size of the context window for each example.
+            transform (callable, optional): Optional transform to be applied on a sample.
+        """
+        self.data = self.load_and_preprocess_data(data_files)
+        self.tokenizer = tokenizer
+        self.context_window = context_window
+        self.transform = transform
+
+    def load_and_preprocess_data(self, data_files):
+        """
+        Loads data from files, preprocesses text, and converts to numerical format.
+        This is a placeholder and should be replaced with actual data loading and preprocessing logic.
+        """
+        all_data = []
+        for file_path in data_files:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                # Assuming each line is a separate data entry
+                for line in f:
+                    # Placeholder for text preprocessing
+                    text = self.preprocess_text(line.strip())
+                    all_data.append(text)
+        return all_data
+
+    def preprocess_text(self, text):
+        """
+        Placeholder for text preprocessing steps.
+        """
+        # Add your text cleaning/preprocessing steps here
+        return text
+
+    def __len__(self):
+        return len(self.data) - self.context_window
+
+    def __getitem__(self, idx):
+        context = self.data[idx:idx + self.context_window]
+        label = self.determine_label(self.data[idx + self.context_window])
+
+        # Tokenize context
+        tokenized_context = self.tokenizer(context, padding=True, truncation=True, return_tensors="pt")
+
+        sample = {'context': tokenized_context, 'label': label}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
+
+    def determine_label(self, text):
+        """
+        Determines the safety label for a given text.
+        This is a placeholder and should be replaced with actual label determination logic.
+        """
+        # Implement your logic to determine the label based on the text
+        # Example: 0 for safe, 1 for unsafe
+        if "unsafe" in text.lower():
+            return 1
+        else:
+            return 0
+
+# Example Usage
+# Assuming you have a tokenizer from a library like Hugging Face's transformers
+# tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+# safety_dataset = SafetyDataset(data_files=['path/to/your/data.txt'], tokenizer=tokenizer, context_window=5)
+# dataloader = DataLoader(safety_dataset, batch_size=32, shuffle=True)
+
+# for batch in dataloader:
+#     # Access context and labels
+#     context = batch['context']
+#     labels = batch['label']
+#     # Further processing...
+
+class PFCModule(nn.Module):
+    """
+    PFC Module for inhibitory control, suppressing unwanted actions or memories.
+    """
+    def __init__(self, hidden_dim, memory_dim, context_dim):
+        super(PFCModule, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.memory_dim = memory_dim
+        self.context_dim = context_dim
+
+        # Layers to process hidden states and memory
+        self.hidden_layer = nn.Linear(hidden_dim, hidden_dim)
+        self.memory_layer = nn.Linear(memory_dim, hidden_dim)
+
+        # Layers for inhibitory signals
+        self.inhibitory_layer = nn.Linear(hidden_dim + context_dim, hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(self, hidden_state, memory, context):
+        # Process hidden state and memory
+        hidden_processed = F.relu(self.hidden_layer(hidden_state))
+        memory_processed = F.relu(self.memory_layer(memory))
+
+        # Combine hidden, memory, and context
+        combined = torch.cat((hidden_processed, memory_processed, context), dim=-1)
+        inhibitory_signals = torch.sigmoid(self.inhibitory_layer(combined))
+
+        # Modulate hidden state with inhibitory signals
+        modulated_hidden = hidden_state * (1 - inhibitory_signals)
+        output = F.relu(self.output_layer(modulated_hidden))
+
+        return output, inhibitory_signals
+
+class MetacognitiveModule(nn.Module):
+    """
+    Enhanced Metacognitive Module with reflection capabilities and safety monitoring.
+    """
+    def __init__(self, hidden_dim, memory_dim):
+        super(MetacognitiveModule, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.memory_dim = memory_dim
+
+        # Original monitor layers for safety
+        self.hidden_monitor = nn.Linear(hidden_dim, 1)
+        self.memory_monitor = nn.Linear(memory_dim, 1)
+        
+        # Reflection generation layers
+        self.reflection_net = nn.Sequential(
+            nn.Linear(hidden_dim + memory_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh()
+        )
+        
+        # Error detection 
+        self.error_detector = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid()
+        )
+        
+        # Self-correction mechanism
+        self.correction_net = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+        
+        # Memory of past reflections (stores last k reflections)
+        self.reflection_memory = []
+        self.max_reflections = 5
+        
+    def forward(self, hidden_state, memory):
+        # Original safety monitoring
+        hidden_score = torch.sigmoid(self.hidden_monitor(hidden_state))
+        memory_score = torch.sigmoid(self.memory_monitor(memory))
+        safety_flag = (hidden_score + memory_score) / 2
+        
+        # Generate reflection
+        combined = torch.cat([hidden_state, memory], dim=-1)
+        reflection = self.reflection_net(combined)
+        
+        # Detect potential errors
+        error_prob = self.error_detector(reflection)
+        
+        # Store reflection in memory
+        if len(self.reflection_memory) >= self.max_reflections:
+            self.reflection_memory.pop(0)
+        self.reflection_memory.append(reflection.detach())
+        
+        # If error probability is high, attempt self-correction
+        corrected_state = hidden_state
+        if error_prob > 0.5:
+            # Use reflection and original state for correction
+            correction_input = torch.cat([hidden_state, reflection], dim=-1)
+            corrected_state = self.correction_net(correction_input)
+            
+        return {
+            'safety_flag': safety_flag,
+            'reflection': reflection,
+            'error_prob': error_prob,
+            'corrected_state': corrected_state,
+            'needs_reflection': error_prob > 0.5
+        }
+        
+    def get_reflection_history(self):
+        """Get history of past reflections"""
+        return self.reflection_memory
+        
+    def reflect_on_error(self, error_context):
+        """Generate targeted reflection based on error context"""
+        if not self.reflection_memory:
+            return None
+            
+        # Combine error context with past reflections
+        past_reflections = torch.stack(self.reflection_memory)
+        avg_reflection = past_reflections.mean(dim=0)
+        
+        # Generate new reflection considering error context
+        combined = torch.cat([avg_reflection, error_context], dim=-1)
+        new_reflection = self.reflection_net(combined)
+        
+        return new_reflection
+
+class Value(nn.Module):
+    """
+    Value  for assigning safety values to different memory tokens or hidden states.
+    """
+    def __init__(self, token_dim):
+        super(Value, self).__init__()
+        self.token_dim = token_dim
+
+        # Assign safety values to tokens
+        self.value_layer = nn.Linear(token_dim, 1)
+
+    def forward(self, tokens):
+        # Compute safety values
+        values = torch.sigmoid(self.value_layer(tokens))
+        return values
+
+class MemoryAugmentedTransformer(nn.Module):
+    """
+    Transformer model augmented with PFC, Metacognitive, and Value  modules for safety regulation.
+    """
+    def __init__(self, transformer, hidden_dim, memory_dim, context_dim, config):
+        super(MemoryAugmentedTransformer, self).__init__()
+        self.transformer = transformer
+        self.pfc = PFCModule(hidden_dim, memory_dim, context_dim)
+        self.metacognitive = MetacognitiveModule(hidden_dim, memory_dim)
+        self.value_ = Value(memory_dim)
+        self.config = config
+
+    def forward(self, hidden_states, memory, context, goal_embedding):
+        # Pass through transformer
+        transformer_output = self.transformer(hidden_states)
+
+        # PFC module processing
+        modulated_output, inhibitory_signals = self.pfc(transformer_output, memory, context)
+
+        # Monitor for safety and generate reflection
+        metacog_output = self.metacognitive(modulated_output, memory)
+        safety_flag = metacog_output['safety_flag']
+        reflection = metacog_output['reflection']
+        error_prob = metacog_output['error_prob']
+        corrected_state = metacog_output['corrected_state']
+        needs_reflection = metacog_output['needs_reflection']
+
+        # Evaluate safety values for memory tokens
+        memory_values = self.value_(memory)
+
+        # Get subgoal importance from memory
+        subgoal_importance = self.config.model.goal_manager.get_subgoal_importance(goal_embedding)
+
+        # Decide whether to use corrected state based on error probability
+        if needs_reflection:
+            final_output = corrected_state
+        else:
+            final_output = modulated_output
+
+        return {
+            'output': final_output,
+            'safety_flag': safety_flag,
+            'inhibitory_signals': inhibitory_signals,
+            'memory_values': memory_values,
+            'reflection': reflection,
+            'error_prob': error_prob,
+            'subgoal_importance': subgoal_importance
+        }
+
+class BinaryLatentMemoryPool:
+    """Enhanced memory pool for storing and managing binary latent states with improved memory management"""
+    def __init__(self, pool_size: int, latent_dim: int, device: str = 'cuda',
+                 memory_decay: float = 0.99, importance_threshold: float = 0.1,
+                 compression_ratio: float = 0.5, diversity_threshold: float = 0.3,
+                 initial_temperature: float = 1.0, initial_exploration: float = 0.1,
+                 min_temperature: float = 0.1, max_temperature: float = 2.0,
+                 temperature_decay: float = 0.99, exploration_decay: float = 0.995,
+                 n_star: int = 4):  # Target number of correct responses per query for balance score
+        self.pool_size = pool_size
+        self.latent_dim = latent_dim
+        self.device = device
+        self.memory_states = torch.zeros(pool_size, latent_dim).to(device)
+        self.binary_states = torch.zeros(pool_size, latent_dim).bool().to(device)
+        self.state_importance = torch.zeros(pool_size).to(device)
+        self.memory_age = torch.zeros(pool_size).to(device)
+        self.memory_decay = memory_decay
+        self.importance_threshold = importance_threshold
+        self.compression_ratio = compression_ratio
+        self.diversity_threshold = diversity_threshold
+        
+        # B* temperature and exploration parameters
+        self.temperature = initial_temperature
+        self.exploration_rate = initial_exploration
+        self.min_temperature = min_temperature
+        self.max_temperature = max_temperature
+        self.temperature_decay = temperature_decay
+        self.exploration_decay = exploration_decay
+        
+        # B-STAR monitoring
+        self.n_star = n_star  # Target number of correct responses for balance score
+        self.temperature_history = []
+        self.exploration_history = []
+        self.balance_scores = []
+        self.exploration_scores = []  # Track Pass@K-S
+        self.exploitation_scores = []  # Track Reward@K-S
+        
+        # Track access frequency for each memory state
+        self.access_count = torch.zeros(pool_size).to(device)
+        self.last_access = torch.zeros(pool_size).to(device)
+        
+        # Binary state encoder/decoder
+        self.state_encoder = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim * 2),
+            nn.ReLU(),
+            nn.Linear(latent_dim * 2, latent_dim),
+            nn.Sigmoid()
+        ).to(device)
+        
+        self.state_decoder = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim * 2),
+            nn.ReLU(),
+            nn.Linear(latent_dim * 2, latent_dim)
+        ).to(device)
+        
+        # Enhanced memory usage and compression statistics
+        self.usage_stats = {
+            'updates': 0,
+            'states_added': 0,
+            'states_dropped': 0,
+            'importance_history': [],
+            'memory_age_history': [],
+            'compression_ratio_history': [],
+            'binary_sparsity_history': [],
+            'reconstruction_error_history': [],
+            'diversity_scores': [],
+            'access_patterns': [],
+            'memory_lifetime': [],
+            'importance_distribution': []
+        }
+        
+    def compute_balance_score(self, n_correct: int, n_selected: int) -> float:
+        """Compute B-STAR balance score for current batch"""
+        # Discount factor encouraging sufficient correct responses
+        discount = min(n_correct / self.n_star, 1.0)
+        # Ratio of correct responses among selected
+        ratio = n_correct / max(n_selected, 1)
+        # Balance score combining quantity and quality
+        return float(discount * ratio)
+
+    def update(self, new_states: torch.Tensor, k: int, binary_latents: Optional[torch.Tensor] = None, 
+              update_params: bool = True, correct_mask: Optional[torch.Tensor] = None):
+        """Update memory pool with enhanced importance scoring and diversity selection"""
+        with torch.no_grad():
+            # Update memory age and access patterns
+            self.memory_age += 1
+            current_step = self.usage_stats['updates']
+            self.last_access = torch.where(
+                self.access_count > 0,
+                current_step - self.last_access,
+                self.memory_age
+            )
+
+            # Apply temperature scaling and exploration
+            if binary_latents is not None:
+                new_binary_states = binary_latents
+            else:
+                # Encode new states to binary with temperature scaling
+                binary_probs = self.state_encoder(new_states)
+                
+                # Apply temperature scaling
+                binary_probs = torch.sigmoid(torch.log(binary_probs + 1e-10) / self.temperature)
+                
+                # Apply exploration
+                if torch.rand(1).item() < self.exploration_rate:
+                    # Random exploration
+                    new_binary_states = torch.rand_like(binary_probs) < self.exploration_rate
+                else:
+                    # Greedy selection with temperature
+                    new_binary_states = (binary_probs > 0.5).bool()
+
+            # Compute binary entropy for importance
+            binary_entropy = -torch.mean(
+                new_binary_states.float() * torch.log2(new_binary_states.float() + 1e-10) +
+                (1 - new_binary_states.float()) * torch.log2(1 - new_binary_states.float() + 1e-10),
+                dim=1
+            )
+            
+            # Enhanced importance scoring combining multiple factors
+            recency_score = 1.0 / (1.0 + self.memory_age)
+            access_score = self.access_count / (self.usage_stats['updates'] + 1)
+            l2_norm = torch.norm(self.memory_states, dim=1)
+            content_score = l2_norm / (torch.max(l2_norm) + 1e-8)
+            
+            # Compute exponential decay
+            time_decay = self.memory_decay ** self.memory_age
+            
+            # Combine scores with learned weights
+            self.state_importance = (
+                0.4 * recency_score + 
+                0.3 * access_score +
+                0.3 * content_score
+            ) * time_decay
+            
+            # Calculate importance scores combining binary entropy, information content and recency
+            state_entropy = self._compute_state_entropy(self.memory_states)
+            binary_importance = binary_entropy / binary_entropy.max()  # Normalize to [0,1]
+            recency_weight = 1.0 / (1.0 + self.memory_age)
+            
+            # Combine scores with learned weights
+            self.state_importance = (
+                0.4 * binary_importance +
+                0.3 * state_entropy * recency_weight +
+                0.3 * (1.0 / (1.0 + self.memory_age))  # Pure recency score
+            )
+            
+            # Filter out low importance states
+            valid_mask = self.state_importance > self.importance_threshold
+            valid_states = self.memory_states[valid_mask]
+            valid_binary = self.binary_states[valid_mask]
+            valid_importance = self.state_importance[valid_mask]
+            valid_age = self.memory_age[valid_mask]
+            
+            # Keep most important states
+            if len(valid_states) > self.pool_size - k:
+                _, indices = torch.topk(valid_importance, self.pool_size - k)
+                kept_states = valid_states[indices]
+                kept_binary = valid_binary[indices]
+                kept_age = valid_age[indices]
+            else:
+                kept_states = valid_states
+                kept_binary = valid_binary
+                kept_age = valid_age
+            
+            # Process new states with enhanced diversity selection
+            if new_states.size(0) > k:
+                # Compute pairwise cosine similarity
+                similarities = torch.nn.functional.cosine_similarity(
+                    new_states.unsqueeze(1),
+                    new_states.unsqueeze(0),
+                    dim=2
+                )
+                
+                # Greedy diversity maximization
+                selected_indices = []
+                available_indices = set(range(len(new_states)))
+                
+                # Start with highest importance state
+                importance = torch.norm(new_states, dim=1)
+                first_idx = importance.argmax().item()
+                selected_indices.append(first_idx)
+                available_indices.remove(first_idx)
+                
+                while len(selected_indices) < k and available_indices:
+                    # Compute maximum similarity to selected states
+                    max_similarities = similarities[list(available_indices)][:, selected_indices].max(dim=1)[0]
+                    
+                    # Select state with lowest maximum similarity
+                    next_idx = min(available_indices, key=lambda i: max_similarities[i].item())
+                    
+                    # Only add if diversity threshold is met
+                    if max_similarities[next_idx].item() < self.diversity_threshold:
+                        selected_indices.append(next_idx)
+                    available_indices.remove(next_idx)
+                
+                selected_indices = torch.tensor(selected_indices, device=self.device)
+                new_states = new_states[selected_indices]
+                new_binary_states = new_binary_states[selected_indices]
+            
+            # Concatenate and update
+            self.memory_states = torch.cat([kept_states, new_states], dim=0)
+            self.binary_states = torch.cat([kept_binary, new_binary_states], dim=0)
+            self.memory_age = torch.cat([
+                kept_age,
+                torch.zeros(len(new_states), device=self.device)
+            ])
+            
+            # Ensure pool size stays constant
+            if self.memory_states.size(0) > self.pool_size:
+                self.memory_states = self.memory_states[:self.pool_size]
+                self.binary_states = self.binary_states[:self.pool_size]
+                self.memory_age = self.memory_age[:self.pool_size]
+            
+            # Compute compression metrics
+            compression_ratio = self._compute_compression_ratio()
+            reconstruction_error = self._compute_reconstruction_error()
+            binary_sparsity = self._compute_binary_sparsity()
+            
+            # Update enhanced statistics
+            self.usage_stats['updates'] += 1
+            self.usage_stats['states_added'] += len(new_states)
+            self.usage_stats['states_dropped'] += (len(valid_states) - len(kept_states))
+            
+            # Compute B-STAR metrics and update parameters
+            if update_params:
+                if correct_mask is not None:
+                    # Get number of correct and selected responses
+                    n_correct = correct_mask.sum().item()
+                    n_selected = len(new_states)
+                    
+                    # Compute balance score
+                    balance_score = self.compute_balance_score(n_correct, n_selected)
+                    self.balance_scores.append(balance_score)
+                    
+                    # Track exploration (Pass@K-S)
+                    exploration_score = n_correct / max(k, 1)  # Ratio of correct responses
+                    self.exploration_scores.append(exploration_score)
+                    
+                    # Track exploitation (Reward@K-S) 
+                    exploitation_score = n_correct / max(n_selected, 1)  # Quality of selection
+                    self.exploitation_scores.append(exploitation_score)
+                    
+                    # Update temperature and exploration based on balance score
+                    self._update_temperature_and_exploration(balance_score)
+                else:
+                    # Fallback to original update if no correct_mask provided
+                    self._update_temperature_and_exploration()
+                
+                # Track history
+                self.temperature_history.append(self.temperature)
+                self.exploration_history.append(self.exploration_rate)
+            
+            # Track detailed memory statistics
+            self.usage_stats['importance_history'].append(self.state_importance.mean().item())
+            self.usage_stats['memory_age_history'].append(self.memory_age.mean().item())
+            self.usage_stats['compression_ratio_history'].append(compression_ratio)
+            self.usage_stats['binary_sparsity_history'].append(binary_sparsity)
+            self.usage_stats['reconstruction_error_history'].append(reconstruction_error)
+            
+            # Track diversity and memory lifetime metrics
+            if len(new_states) > 1:
+                diversity_score = 1.0 - torch.nn.functional.cosine_similarity(
+                    new_states.unsqueeze(1),
+                    new_states.unsqueeze(0),
+                    dim=2
+                ).mean().item()
+                self.usage_stats['diversity_scores'].append(diversity_score)
+            
+            self.usage_stats['access_patterns'].append(self.access_count.mean().item())
+            self.usage_stats['memory_lifetime'].append(
+                (self.memory_age * (self.state_importance > self.importance_threshold).float()).mean().item()
+            )
+            self.usage_stats['importance_distribution'].append(
+                self.state_importance.histc(bins=10, min=0, max=1).tolist()
+            )
+            
+    def get_states(self) -> torch.Tensor:
+        """Get current memory states with importance weighting and binary reconstruction"""
+        # Weight states by importance
+        weights = torch.softmax(self.state_importance, dim=0)
+        weighted_states = self.memory_states * weights.unsqueeze(1)
+        
+        # Reconstruct from binary states when beneficial
+        binary_states = self.binary_states.float()
+        reconstructed_states = self.state_decoder(binary_states)
+        
+        # Use binary reconstruction when compression ratio is good
+        use_binary = self._compute_compression_ratio() < self.compression_ratio
+        return torch.where(use_binary.unsqueeze(1), reconstructed_states, weighted_states)
+    
+    def _select_diverse_binary_states(self, binary_states: torch.Tensor, k: int) -> torch.Tensor:
+        """Select diverse states using Hamming distance between binary representations"""
+        if len(binary_states) <= k:
+            return torch.arange(len(binary_states))
+            
+        # Compute pairwise Hamming distances
+        distances = torch.cdist(
+            binary_states.float(),
+            binary_states.float(),
+            p=0  # Hamming distance
+        )
+        
+        # Greedy selection of diverse states
+        selected = [0]  # Start with first state
+        while len(selected) < k:
+            # Compute minimum distance to selected states
+            min_dist = distances[selected].min(dim=0)[0]
+            
+            # Select state with maximum minimum distance
+            remaining = list(set(range(len(binary_states))) - set(selected))
+            next_idx = max(remaining, key=lambda i: min_dist[i])
+            selected.append(next_idx)
+            
+        return torch.tensor(selected, device=binary_states.device)
+    
+    def _compute_state_entropy(self, states: torch.Tensor) -> torch.Tensor:
+        """Compute entropy of states as importance measure"""
+        # Normalize states to probability distribution
+        probs = torch.softmax(states, dim=1)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
+        return entropy
+        
+    def _compute_compression_ratio(self) -> float:
+        """Compute effective compression ratio of binary states"""
+        binary_size = self.binary_states.numel() / 8  # Convert bits to bytes
+        full_size = self.memory_states.numel() * self.memory_states.element_size()
+        return binary_size / full_size
+        
+    def _compute_reconstruction_error(self) -> float:
+        """Compute reconstruction error of binary states"""
+        with torch.no_grad():
+            binary_states = self.binary_states.float()
+            reconstructed = self.state_decoder(binary_states)
+            error = nn.MSELoss()(reconstructed, self.memory_states)
+            return error.item()
+            
+    def _compute_binary_sparsity(self) -> float:
+        """Compute sparsity of binary states"""
+        return 1.0 - (self.binary_states.float().mean().item())
+        
+    def _update_temperature_and_exploration(self, balance_score: Optional[float] = None):
+        """Update temperature and exploration rate based on B-STAR balance score"""
+        if balance_score is not None:
+            # Adjust temperature based on balance score
+            if balance_score < 0.5:  # Poor balance
+                # Increase temperature to encourage exploration
+                self.temperature = min(
+                    self.max_temperature,
+                    self.temperature / self.temperature_decay
+                )
+            else:  # Good balance
+                # Gradually reduce temperature
+                self.temperature = max(
+                    self.min_temperature,
+                    self.temperature * self.temperature_decay
+                )
+            
+            # Adjust exploration rate based on balance score
+            if balance_score < 0.3:  #
+
+
+```python
+                # Increase exploration significantly
+                self.exploration_rate = min(1.0, self.exploration_rate / (self.exploration_decay * 0.8))
+            elif balance_score < 0.7:  # Moderate balance
+                # Increase exploration moderately
+                self.exploration_rate = min(1.0, self.exploration_rate / self.exploration_decay)
+            else:  # Good balance
+                # Reduce exploration gradually
+                self.exploration_rate *= self.exploration_decay
+        else:
+            # Fallback to original update logic
+            # Decay temperature
+            self.temperature = max(
+                self.min_temperature,
+                self.temperature * self.temperature_decay
+            )
+            
+            # Increase temperature if memory performance is poor
+            avg_importance = self.state_importance.mean().item()
+            if avg_importance < self.importance_threshold:
+                self.temperature = min(
+                    self.max_temperature,
+                    self.temperature / self.temperature_decay
+                )
+            
+            # Decay exploration rate
+            self.exploration_rate *= self.exploration_decay
+            
+            # Increase exploration if memory is too homogeneous
+            if self._compute_memory_diversity() < self.diversity_threshold:
+                self.exploration_rate = min(1.0, self.exploration_rate / self.exploration_decay)
+    
+    def _compute_memory_diversity(self) -> float:
+        """Compute diversity of memory states"""
+        if len(self.memory_states) <= 1:
+            return 0.0
+            
+        # Compute pairwise cosine similarities
+        normalized = torch.nn.functional.normalize(self.memory_states, dim=1)
+        similarities = torch.mm(normalized, normalized.t())
+        
+        # Average similarity (lower means more diverse)
+        avg_similarity = (similarities.sum() - similarities.diag().sum()) / (similarities.numel() - similarities.size(0))
+        
+        # Convert to diversity score (1 - similarity)
+        return 1.0 - avg_similarity.item()
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get memory usage and compression statistics"""
+        stats = {
+            'pool_size': self.pool_size,
+            'current_size': len(self.memory_states),
+            'mean_importance': self.state_importance.mean().item(),
+            'mean_age': self.memory_age.mean().item(),
+            'compression_ratio': self._compute_compression_ratio(),
+            'binary_sparsity': self._compute_binary_sparsity(),
+            'reconstruction_error': self._compute_reconstruction_error(),
+            'updates': self.usage_stats['updates'],
+            'total_states_added': self.usage_stats['states_added'],
+            'total_states_dropped': self.usage_stats['states_dropped'],
+            'importance_history': self.usage_stats['importance_history'],
+            'age_history': self.usage_stats['memory_age_history'],
+            'compression_history': self.usage_stats['compression_ratio_history'],
+            'sparsity_history': self.usage_stats['binary_sparsity_history'],
+            'reconstruction_history': self.usage_stats['reconstruction_error_history'],
+            
+            # B-STAR specific stats
+            'temperature': self.temperature,
+            'exploration_rate': self.exploration_rate,
+            'temperature_history': self.temperature_history,
+            'exploration_history': self.exploration_history,
+            'memory_diversity': self._compute_memory_diversity(),
+            
+            # B-STAR monitoring metrics
+            'balance_scores': self.balance_scores,
+            'exploration_scores': self.exploration_scores,
+            'exploitation_scores': self.exploitation_scores,
+            'mean_balance_score': sum(self.balance_scores) / max(len(self.balance_scores), 1),
+            'mean_exploration_score': sum(self.exploration_scores) / max(len(self.exploration_scores), 1),
+            'mean_exploitation_score': sum(self.exploitation_scores) / max(len(self.exploitation_scores), 1)
+        }
+        return stats
+
+class MultiStateRNN(nn.Module):
+    """Multi-state RNN with memory pool integration"""
+    def __init__(self, hidden_size: int, num_layers: int, memory_size: int = 1024, k_tokens: int = 32):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.k_tokens = k_tokens
+        
+        # RNN cells for each layer
+        self.cells = nn.ModuleList([
+            nn.LSTMCell(hidden_size, hidden_size)
+            for _ in range(num_layers)
+        ])
+        
+        # Memory pool
+        self.memory_pool = BinaryLatentMemoryPool(memory_size, hidden_size) #Replaced Memory Pool with Binary Latent Memory Pool
+        
+        # Memory integration
+        self.memory_attention = nn.MultiheadAttention(
+            embed_dim=hidden_size,
+            num_heads=8,
+            dropout=0.1,
+            batch_first=True
+        )
+        
+        # State compression policy
+        self.compression_enabled = False
+        self.max_states = None
+        
+    def forward(self, x: torch.Tensor, states: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
+        """
+        Forward pass with memory integration and state compression
+        Args:
+            x: Input tensor [batch_size, hidden_size]
+            states: Optional list of (h, c) states for each layer
+        Returns:
+            output: Output tensor [batch_size, hidden_size]
+            new_states: Updated states for each layer
+        """
+        batch_size = x.size(0)
+        
+        # Initialize states if not provided
+        if states is None:
+            states = [(torch.zeros(batch_size, self.hidden_size, device=x.device),
+                      torch.zeros(batch_size, self.hidden_size, device=x.device))
+                     for _ in range(self.num_layers)]
+        
+        # Get memory tokens
+        memory_tokens = self.memory_pool.get_states().unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # Process through layers
+        current_input = x
+        new_states = []
+        for i, (h, c) in enumerate(states):
+            # Concatenate input with memory tokens
+            combined_input = torch.cat([current_input.unsqueeze(1), memory_tokens], dim=1)
+            
+            # Apply memory attention
+            attended_memory, _ = self.memory_attention(
+                current_input.unsqueeze(1),
+                memory_tokens,
+                memory_tokens
+            )
+            
+            # Combine with current input
+            enhanced_input = current_input + attended_memory.squeeze(1)
+            
+            # RNN cell forward pass
+            new_h, new_c = self.cells[i](enhanced_input, (h, c))
+            
+            # Apply compression if enabled
+            if self.compression_enabled and self.max_states is not None:
+                new_h, new_c = self._compress_states(new_h, new_c)
+                
+            new_states.append((new_h, new_c))
+            current_input = new_h
+            
+        # Update memory pool with last K tokens
+        self.memory_pool.update(current_input[-self.k_tokens:], self.k_tokens)
+            
+        return current_input, new_states
+        
+    def _compress_states(self, h: torch.Tensor, c: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compress states if they exceed max_states"""
+        if h.size(1) > self.max_states:
+            # Keep most important states based on activation magnitude
+            importance = torch.norm(h, dim=2)  # [batch_size, num_states]
+            _, indices = torch.topk(importance, self.max_states, dim=1)
+            h = torch.gather(h, 1, indices.unsqueeze(-1).expand(-1, -1, h.size(-1)))
+            c = torch.gather(c, 1, indices.unsqueeze(-1).expand(-1, -1, c.size(-1)))
+        return h, c
+
+class GoalNode:
+    """Node in the goal tree representing a subgoal"""
+    def __init__(self, text: str, parent=None):
+        self.text = text
+        self.parent = parent
+        self.children = []
+        self.importance = 1.0
+        self.visits = 0
+        self.rewards = []
+        
+    def add_child(self, child_text: str) -> 'GoalNode':
+        """Add a child node with given text"""
+        child = GoalNode(child_text, self)
+        self.children.append(child)
+        return child
+        
+    def update(self, reward: float):
+        """Update node statistics with new reward"""
+        self.visits += 1
+        self.rewards.append(reward)
+        self.importance = np.mean(self.rewards)
+        
+    def is_leaf(self) -> bool:
+        """Check if node is"""
+        return len(self.children) == 0
+        
+    def get_path(self) -> List[str]:
+        """Get the path from root to this node"""
+        path = [self.text]
+        current = self
+        while current.parent:
+            current = current.parent
+            path.insert(0, current.text)
+        return path
+
+class GoalManager:
+    """
+    Manages hierarchical goal decomposition and selection using SELFGOAL approach.
+    """
+    def __init__(self, config):
+        self.config = config
+        
+        # Goal tree
+        self.root = None
+        
+        # Tracking
+        self.selected_goals = []
+        self.goal_history = []
+        
+        # Parameters
+        self.max_goals = config.max_goals
+        self.min_importance = config.min_importance
+        self.exploration_factor = config.exploration_factor
+        importance = self.goal_manager.get_subgoal_importance(subgoal_embedding) #importance and scoring from subgoal embedding byte latent transformer.
+        
+        # B-STAR parameters
+        self.temperature = self.config.initial_temperature  # Initial temperature for exploration
+        self.min_temperature = 0.1 # Min temperature
+        self.temperature_decay = 0.99 # Decay for temperature
+        
+    def initialize_tree(self, main_goal: str):
+        """Initialize goal tree with main goal"""
+        self.root = GoalNode(main_goal)
+        
+    def decompose_goal(self, goal_node: GoalNode, context: dict) -> List[str]:
+        """Decompose a goal into subgoals based on context"""
+        # Use LLM to generate subgoals (replace with actual LLM call)
+        self.goal_manager.add_subgoal_embedding(subgoal, subgoal_embedding)
+        subgoals = self._generate_subgoals(goal_node.text, context)
+
+        
+        # Filter similar subgoals (replace with actual similarity check)
+        unique_subgoals = self._filter_similar(subgoals)
+        
+        # Add as children
+        for subgoal in unique_subgoals:
+            goal_node.add_child(subgoal)
+            
+        return unique_subgoals
+        
+    def select_goals(self, context: dict) -> List[str]:
+      """Select most relevant goals based on current context, using B-STAR principles"""
+      selected = []
+    
+      # Get all leaf nodes
+      leaves = self._get_leaves(self.root)
+    
+      if not leaves:
+          return []
+    
+      # Score leaves based on context and exploration-exploitation balance
+      scores = self._score_goals(leaves, context)
+    
+      # Apply temperature-based sampling (similar to B-STAR)
+      # Higher temperature -> more exploration
+      # Lower temperature -> more exploitation (favoring higher-scoring goals)
+      if self.temperature > 0:
+          exp_scores = np.exp(np.array(scores) / self.temperature)
+          probs = exp_scores / np.sum(exp_scores)
+    
+          # Select goals based on the probabilities
+          num_goals_to_select = min(self.max_goals, len(leaves))
+          selected_indices = np.random.choice(
+              len(leaves),
+              size=num_goals_to_select,
+              replace=False,
+              p=probs
+          )
+          selected = [leaves[i].text for i in selected_indices]
+      else:
+          # If temperature is 0 or less, perform greedy selection (exploitation only)
+          k = min(self.max_goals, len(leaves))
+          selected_indices = np.argpartition(scores, -k)[-k:]
+          selected = [leaves[i].text for i in selected_indices]
+    
+      self.selected_goals = selected
+      self.goal_history.append(selected)
+    
+      return selected
+
+    def update_tree(self, reward: float):
+        """Update tree statistics based on reward, and adjust temperature using B-STAR principles"""
+        # Update selected nodes
+        for goal in self.selected_goals:
+            node = self._find_node(self.root, goal)
+            if node:
+                node.update(reward)
+
+        # Update temperature based on success/failure
+        # If recent rewards are high, decrease temperature to encourage exploitation
+        # If recent rewards are low, increase temperature to encourage exploration
+        if len(self.goal_history) > 10: # Consider recent 10 steps for temperature update
+            recent_rewards = [np.mean(self._find_node(self.root, g).rewards) for g in self.goal_history[-10:] if self._find_node(self.root, g)]
+
+            if len(recent_rewards) > 0:
+                avg_recent_reward = np.mean(recent_rewards)
+                if avg_recent_reward > 0.7: # Assume 0.7 as a threshold for success
+                    self.temperature = max(self.min_temperature, self.temperature * self.temperature_decay)
+                elif avg_recent_reward < 0.4:
+                    self.temperature = min(self.config.initial_temperature, self.temperature / self.temperature_decay)
+
+        # Prune low importance nodes
+        self._prune_tree(self.root)
+        
+    def get_subgoal_importance(self, subgoal_embedding: torch.Tensor) -> float:
+        """
+        Retrieves the importance of a subgoal based on its embedding.
+
+        We'll use the memory pool to store subgoal embeddings and their importance scores.
+        For simplicity, we'll find the closest embedding in the memory pool and return its importance.
+        In a more advanced implementation, you could use a weighted average of k-nearest neighbors or other
+        similarity-based schemes.
+        """
+        if not self.config.model.memory_pool.memory_states.numel():
+            return 1.0  # Default importance if memory is empty
+
+        # Calculate distances from the given embedding to all embeddings in the memory
+        memory_states = self.config.model.memory_pool.get_states()
+        
+        
+        distances = torch.norm(memory_states - subgoal_embedding.unsqueeze(0), dim=1)
+
+        # Find the index of the closest embedding
+        closest_index = torch.argmin(distances).item()
+
+        # Retrieve the importance score of the closest embedding
+        # Assuming that 'state_importance' stores the importance scores in the memory pool
+        importance = self.config.model.memory_pool.state_importance[closest_index].item()
+
+        return importance
+        
+    def add_subgoal_embedding(self, goal_text: str, embedding: torch.Tensor):
+        """
+        Adds a new subgoal and its embedding to the goal_embeddings dictionary.
+        """
+        self.goal_embeddings[goal_text] = embedding
+        
+    def _filter_similar(self, subgoals: List[str]) -> List[str]:
+        """
+        Filters out subgoals that are too similar to each other based on their embeddings.
+        """
+        if not subgoals:
+            return []
+
+        # Retrieve embeddings for each subgoal
+        embeddings = [self.goal_embeddings.get(subgoal) for subgoal in subgoals]
+
+        # Filter out subgoals that don't have embeddings yet
+        valid_subgoals_and_embeddings = [(subgoal, embedding) for subgoal, embedding in zip(subgoals, embeddings) if embedding is not None]
+        if not valid_subgoals_and_embeddings:
+            return []
+
+        valid_subgoals, embeddings = zip(*valid_subgoals_and_embeddings)  # type: ignore
+        embeddings_tensor = torch.stack(embeddings)
+
+        # Compute cosine similarity between all pairs of embeddings
+        similarity_matrix = torch.nn.functional.cosine_similarity(
+            embeddings_tensor.unsqueeze(1),
+            embeddings_tensor.unsqueeze(0),
+            dim=2
+        )
+
+        # Filter out subgoals that are too similar to others
+        unique_subgoals = []
+        for i, subgoal in enumerate(valid_subgoals):
+            # Check if the subgoal is not too similar to any previously added unique subgoals
+            if all(similarity_matrix[i, j] < self.similarity_threshold for j in range(i)):
+                unique_subgoals.append(subgoal)
+
+        return unique_subgoals
+
+   def _score_subgoals(self, subgoal_embeddings: List[torch.Tensor], context_embedding: torch.Tensor, k: int = 3, similarity_threshold: float = 0.5) -> List[float]:
+    """
+    Scores subgoals based on relevance, importance (retrieved from memory), and exploration.
+    Uses k-nearest neighbors and a similarity threshold for importance retrieval.
+    """
+    scores = []
+    for subgoal_embedding in subgoal_embeddings:
+        # Combine subgoal and context embeddings for relevance scoring
+        combined = torch.cat([subgoal_embedding, context_embedding], dim=-1)
+        # Get a relevance score from the scoring module
+        relevance_score = self.subgoal_scorer(combined.unsqueeze(0)).squeeze().item()
+
+        # Retrieve importance from memory using k-nearest neighbors and similarity threshold
+        importance = 1.0  # Default importance
+        if self.memory_pool.memory_states.numel() > 0:
+            distances = torch.norm(self.memory_pool.memory_states - subgoal_embedding.unsqueeze(0), dim=1)
+            closest_indices = torch.topk(distances, k, largest=False).indices  # Get indices of k closest
+
+            neighbor_importances = []
+            weights = []
+            for idx in closest_indices:
+                if distances[idx] < similarity_threshold:  # Only consider neighbors within the threshold
+                    neighbor_importances.append(self.memory_pool.state_importance[idx].item())
+                    weights.append(1 / (distances[idx].item() + 1e-8))  # Inverse distance weighting
+
+            if neighbor_importances:
+                importance = np.average(neighbor_importances, weights=weights)
+
+        # Encourage exploration of less-visited nodes
+        exploration_bonus = self.config.exploration_factor / (node.visits + 1)
+
+        # Combine to get the final score
+        score = relevance_score * importance + exploration_bonus
+        scores.append(score)
+
+    return scores
+        
+    def _get_leaves(self, node: GoalNode) -> List[GoalNode]:
+        """Recursively get all leaf nodes"""
+        if node.is_leaf():
+            return [node]
+        else:
+            leaves = []
+            for child in node.children:
+                leaves.extend(self._get_leaves(child))
+            return leaves
+            
+    def _find_node(self, root: GoalNode, goal_text: str) -> Optional[GoalNode]:
+        """Find a node with given text in the tree"""
+        if root.text == goal_text:
+            return root
+        for child in root.children:
+            found = self._find_node(child, goal_text)
+            if found:
+                return found
+        return None
+        
+    def _prune_tree(self, node: GoalNode):
+        """Recursively prune low importance nodes"""
+        node.children = [
+            child for child in node.children
+            if child.importance >= self.min_importance
+        ]
+        for child in node.children:
+            self._prune_tree(child)
+
+class ChainOfThoughtReward(nn.Module):
+    """
+    Reward model for Chain-of-Thought (CoT) reasoning that integrates with MCTS.
+    """
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        # Confidence scoring 
+        self.confidence_net = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1),
+            nn.Sigmoid()
+        )
+        
+        # Value prediction for MCTS
+        self.value_net = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1),
+            nn.Tanh()  # Output in [-1, 1] range
+        )
+        
+        # Policy head for MCTS action selection
+        self.policy_net = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, config.action_space_size)
+        )
+        
+        # Temperature parameter for confidence scoring
+        self.temperature = 0.1
+        
+    def compute_confidence_score(self, token_logits: torch.Tensor) -> torch.Tensor:
+        """Compute confidence score for each token using top-5 alternatives"""
+        # Get top 5 probabilities
+        top_probs = F.softmax(token_logits, dim=-1).topk(5, dim=-1).values
+        
+        # Compute confidence as ratio of top probability to sum of top 5
+        confidence = top_probs[:, :, 0] / (top_probs.sum(dim=-1) + 1e-10)
+        
+        return confidence
+        
+    def compute_reward(self, reasoning_path: torch.Tensor) -> torch.Tensor:
+        """Compute reward for a reasoning path based on confidence and value prediction"""
+        # Get confidence scores for each step
+        confidence_scores = self.confidence_net(reasoning_path)
+        
+        # Get value prediction
+        value = self.value_net(reasoning_path.mean(dim=1))
+        
+        # Combine confidence and value prediction
+        reward = confidence_scores.mean(dim=1) * (value + 1) / 2  # Scale value to [0,1]
+        
+        return reward
+        
+    def get_mcts_outputs(self, state: torch.Tensor) -> tuple:
+        """Get policy logits and value prediction for MCTS"""
+        policy_logits = self.policy_net(state)
+        value = self.value_net(state).squeeze(-1)
+        
+        return policy_logits, value
+        
+    def update_temperature(self, reward_history: list):
+        """Adaptively update temperature based on reward history"""
+        if len(reward_history) < 10:
+            return
+            
+        # Compute mean and std of recent rewards
+        recent_rewards = torch.tensor(reward_history[-10:])
+        mean_reward = recent_rewards.mean()
+        std_reward = recent_rewards.std()
+        
+        # Adjust temperature based on reward statistics
+        if mean_reward > 0.8:  # High rewards - reduce temperature
+            self.temperature = max(0.05, self.temperature * 0.95)
+        elif mean_reward < 0.4:  # Low rewards - increase temperature
+            self.temperature = min(1.0, self.temperature * 1.05)
+        elif std_reward < 0.1:  # Low variance - increase temperature
+            self.temperature = min(1.0, self.temperature * 1.02)
+
+    def forward(self, reasoning_states: torch.Tensor, actions: torch.Tensor = None) -> dict:
+        """Forward pass computing rewards and MCTS outputs"""
+        # Compute rewards
+        rewards = self.compute_reward(reasoning_states)
+        
+        # Get MCTS outputs from final state
+        policy_logits, values = self.get_mcts_outputs(reasoning_states[:, -1])
+        
+        outputs = {
+            'rewards': rewards,
+            'policy_logits': policy_logits,
+            'values': values
+        }
+        
+        # Compute policy loss if actions provided
+        if actions is not None:
+            policy_loss = F.cross_entropy(policy_logits, actions)
+            outputs['policy_loss'] = policy_loss
+            
+        return outputs
+
+class FactualityRewardModel(nn.Module):
+    """Reward model for factuality assessment"""
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        
+        # Factuality projection
+        self.factuality_projection = nn.Linear(config.d_model, config.d_model)
+        
+        # Factuality attention for scoring
+        self.factuality_attention = nn.MultiheadAttention(
+            embed_dim=config.d_model,
+            num_heads=config.n_heads,
+            dropout=config.dropout,
+            batch_first=True
+        )
+        
+        # Temperature for scaling scores
+        self.factuality_temperature = 0.1
+        
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Compute factuality scores"""
+        # Project to factuality space
+        factuality_hidden = self.factuality_projection(hidden_states)
+        
+        # Compute attention-based factuality scores
+        scores, _ = self.factuality_attention(
+            factuality_hidden, factuality_hidden, factuality_hidden
+        )
+        
+        # Average across heads and apply temperature scaling
+        scores = scores.mean(dim=1)  # [batch_size, seq_len]
+        scores = torch.sigmoid(scores / self.factuality_temperature)
+        
+        return scores
+
+class GoalManager:
+    """
+    Manages hierarchical goal decomposition and selection using an internal approach.
+    """
+    def __init__(self, config):
+        self.config = config
+        
+        # Goal tree
+        self.root = None
+        
+        # Tracking
+        self.selected_goals = []
+        self.goal_history = []
+        self.goal_embeddings = {}  # Store embeddings of goals for similarity checks
+        
+        # Parameters
+        self.max_goals = config.max_goals
+        self.min_importance = config.min_importance
+        self.exploration_factor = config.exploration_factor
+        
+        # B-STAR parameters
+        self.temperature = self.config.initial_temperature  # Initial temperature for exploration
+        self.min_temperature = 0.1 # Min temperature
+        self.temperature_decay = 0.99 # Decay for temperature
+        self.similarity_threshold = 0.85 # Threshold for filtering similar goals
+        
+    def initialize_tree(self, main_goal: str):
+        """Initialize goal tree with main goal"""
+        self.root = GoalNode(main_goal)
+        # Generate and store embedding for the main goal
+        self.goal_embeddings[main_goal] = self.generate_embedding(main_goal)
+
+    def decompose_goal(self, goal_node: GoalNode, context: dict) -> List[str]:
+        """
+        Decompose a goal into subgoals based on context using the model's internal subgoal generation module.
+        """
+        if not hasattr(self.config, "model"):
+            raise AttributeError("The config object must have a 'model' attribute referring to the ByteLatentTransformer model.")
+
+        model = self.config.model
+
+        # Ensure the model is in evaluation mode
+        model.eval()
+
+        with torch.no_grad():
+            # Encode the current goal and context into embeddings
+            goal_embedding = model._encode_goals([goal_node.text])
+            context_embedding = model._encode_context(context)
+
+            # Generate subgoal embeddings
+            subgoal_embeddings = model._generate_subgoals(goal_embedding, context_embedding)
+
+            # Filter out similar subgoals
+            unique_subgoal_embeddings = model._filter_subgoals(subgoal_embeddings)
+
+            # Decode subgoal embeddings into text
+            subgoals = [model._decode_goal(embedding) for embedding in unique_subgoal_embeddings]
+
+            # Add new subgoals as children and store their embeddings
+            for subgoal in subgoals:
+                goal_node.add_child(subgoal)
+                self.goal_embeddings[subgoal] = self.generate_embedding(subgoal)  # Assuming you add this method to GoalManager
+
+        return subgoals
+
+    def generate_embedding(self, text: str) -> torch.Tensor:
+        """
+        Generates an embedding for a given text using the model's encoder.
+        Assumes that the model has a method 'encode_text' that returns an embedding.
+        """
+        if not hasattr(self.config, "model"):
+            raise AttributeError("The config object must have a 'model' attribute referring to the ByteLatentTransformer model.")
+
+        model = self.config.model
+        model.eval()  # Ensure the model is in evaluation mode
+
+        with torch.no_grad():
+            # Tokenize the text (assuming your tokenizer can handle single strings)
+            tokens = self.config.tokenizer.tokenize(text)
+            # Convert tokens to tensor (add batch dimension)
+            input_tensor = {k: v.unsqueeze(0).to(self.config.device) for k, v in tokens.items()}
+            # Get the model's output
+            outputs = model(input_tensor)
+            # Extract the embedding (e.g., from the encoder states)
+            # This assumes that the last encoder state is a good representation of the whole sequence
+            embedding = outputs['encoder_states'][-1].mean(dim=1).squeeze(0)
+
+        return embedding
+        
+    def _filter_similar(self, subgoals: List[str]) -> List[str]:
+        """Filter out similar subgoals based on their embeddings."""
+        if not subgoals:
+            return []
+
+        # Retrieve embeddings for each subgoal
+        embeddings = [self.goal_embeddings[subgoal] for subgoal in subgoals]
+
+        # Compute cosine similarity between all pairs of embeddings
+        similarity_matrix = torch.nn.functional.cosine_similarity(
+            torch.stack(embeddings).unsqueeze(1), 
+            torch.stack(embeddings).unsqueeze(0), 
+            dim=2
+        )
+
+        # Filter out subgoals that are too similar to others
+        unique_subgoals = []
+        for i, subgoal in enumerate(subgoals):
+            # Check if the subgoal is not too similar to any previously added unique subgoals
+            if all(similarity_matrix[i, j] < self.similarity_threshold for j in range(i)):
+                unique_subgoals.append(subgoal)
+
+        return unique_subgoals
+        
+    def select_goals(self, context: dict) -> List[str]:
+      """Select most relevant goals based on current context, using B-STAR principles"""
+      selected = []
+    
+      # Get all leaf nodes
+      leaves = self._get_leaves(self.root)
+    
+      if not leaves:
+          return []
+    
+      # Score leaves based on context and exploration-exploitation balance
+      scores = self._score_goals(leaves, context)
+    
+      # Apply temperature-based sampling (similar to B-STAR)
+      # Higher temperature -> more exploration
+      # Lower temperature -> more exploitation (favoring higher-scoring goals)
+      if self.temperature > 0:
+          exp_scores = np.exp(np.array(scores) / self.temperature)
+          probs = exp_scores / np.sum(exp_scores)
+    
+          # Select goals based on the probabilities
+          num_goals_to_select = min(self.max_goals, len(leaves))
+          selected_indices = np.random.choice(
+              len(leaves),
+              size=num_goals_to_select,
+              replace=False,
+              p=probs
+          )
+          selected = [leaves[i].text for i in selected_indices]
+      else:
+          # If temperature is 0 or less, perform greedy selection (exploitation only)
+          k = min(self.max_goals, len(leaves))
+          selected_indices = np.argpartition(scores, -k)[-k:]
+          selected = [leaves[i].text for i in selected_indices]
+    
+      self.selected_goals = selected
+      self.goal_history.append(selected)
+    
+      return selected
+
+    def update_tree(self, reward: float):
+        """Update tree statistics based on reward, and adjust temperature using B-STAR principles"""
+        # Update selected nodes
+        for goal in self.selected_goals:
+            node = self._find_node(self.root, goal)
+            if node:
+                node.update(reward)
+
+        # Update temperature based on success/failure
+        # If recent rewards are high, decrease temperature to encourage exploitation
+        # If recent rewards are low, increase temperature to encourage exploration
+        if len(self.goal_history) > 10: # Consider recent 10 steps for temperature update
+            recent_rewards = [np.mean(self._find_node(self.root, g).rewards) for g in self.goal_history[-10:] if self._find_node(self.root, g)]
+
+            if len(recent_rewards) > 0:
+                avg_recent_reward = np.mean(recent_rewards)
+                if avg_recent_reward > 0.7: # Assume 0.7 as a threshold for success
+                    self.temperature = max(self.min_temperature, self.temperature * self.temperature_decay)
+                elif avg_recent_reward < 0.4:
+                    self.temperature = min(self.config.initial_temperature, self.temperature / self.temperature_decay)
+
+        # Prune low importance nodes
+        self._prune_tree(self.root)
+        
+    def _score_goals(self, goal_nodes: List[GoalNode], context: dict) -> List[float]
+        """Score goals based on context using an LLM, importance, and exploration factor."""
+        scores = []
+        for node in goal_nodes:
+            # Retrieve the subgoal embedding
+            subgoal_embedding = self.goal_embeddings.get(node.text)
+
+            if subgoal_embedding is None:
+                print(f"Warning: Embedding not found for subgoal '{node.text}'. Skipping.")
+                continue  # Skip this subgoal if embedding is not found
+
+            # Encode the context into an embedding
+            context_embedding = self.config.model._encode_context(context)
+
+            # Calculate the relevance score using the model's internal scoring module
+            relevance_score = self.config.model._score_subgoals([subgoal_embedding], context_embedding)[0]
+
+            # Encourage exploration of less-visited nodes
+            exploration_bonus = self.exploration_factor / (node.visits + 1)
+
+            # Overall score is a combination of relevance, importance, and exploration
+            score = (relevance_score * node.importance) + exploration_bonus
+            scores.append(score)
+
+        return scores
+
+    def get_subgoal_importance(self, subgoal_embedding: torch.Tensor) -> float:
+        """
+        Retrieves the importance of a subgoal based on its embedding.
+        This is a placeholder method that you'll need to implement based on how you store
+        and update subgoal importance in the GoalManager.
+        """
+        # This is a placeholder. You might want to:
+        # 1. Maintain a dictionary mapping subgoal text to importance.
+        # 2. Use the memory pool to store subgoal embeddings and their importance scores.
+        # 3. Implement a mechanism to query this dictionary/memory pool based on the subgoal embedding.
+
+        # For now, let's assume a simple dictionary lookup:
+        subgoal_text = self._find_subgoal_text(subgoal_embedding)
+        if subgoal_text:
+            node = self._find_node(self.root, subgoal_text)
+            if node:
+                return node.importance
+        return 1.0  # Default importance if not found
+        
+    def _find_subgoal_text(self, subgoal_embedding: torch.Tensor) -> Optional[str]:
+        """
+        Finds the text of a subgoal based on its embedding using the model's decoder.
+        """
+        self.model.eval()  # Ensure the model is in evaluation mode
+
+        with torch.no_grad():
+            # 1. Prepare Decoder Input:
+            # Start with an SOS token (if your model uses it).
+            sos_token_id = self.config.tokenizer.bos_token_id if hasattr(self.config.tokenizer, 'bos_token_id') else 0  # Replace 0 with your model's SOS token ID if it's different
+            decoder_input = torch.tensor([[sos_token_id]], dtype=torch.long, device=self.config.device)
+
+            # 2. Initialize Decoder Hidden State:
+            # Use the subgoal_embedding to initialize the decoder's hidden state.
+            # You may need to adjust the dimensions based on your decoder's architecture.
+            decoder_hidden = subgoal_embedding.unsqueeze(0).unsqueeze(0)  # Add batch and sequence dimensions
+            if self.config.decoder_layers > 1:
+                decoder_hidden = decoder_hidden.repeat(self.config.decoder_layers, 1, 1)
+
+            # 3. Decode with Beam Search:
+            max_length = 50  # Maximum length of the decoded subgoal (adjust as needed)
+            beam_width = 5   # Adjust as needed
+            sequences = [(decoder_input, 0.0, decoder_hidden)]  # (sequence, score, hidden_state)
+
+            for _ in range(max_length):
+                all_candidates = []
+                for seq, score, hidden in sequences:
+                    # Stop if the sequence has already generated an EOS token
+                    if seq[0, -1].item() == self.config.tokenizer.eos_token_id:
+                        all_candidates.append((seq, score, hidden))
+                        continue
+
+                    # Get the decoder output
+                    decoder_output, new_hidden = self.model.local_decoder['transformer'](seq, memory=None, hidden=hidden)
+
+                    # Get the log probabilities of the next tokens
+                    log_probs = F.log_softmax(self.model.local_decoder['output'](decoder_output), dim=-1)
+
+                    # Select the top-k candidates
+                    top_k_log_probs, top_k_indices = log_probs[0, -1, :].topk(beam_width)
+
+                    # Create new candidate sequences
+                    for i in range(beam_width):
+                        token_log_prob = top_k_log_probs[i].item()
+                        token_index = top_k_indices[i].unsqueeze(0).unsqueeze(0)
+                        new_seq = torch.cat([seq, token_index], dim=-1)
+                        new_score = score + token_log_prob
+                        all_candidates.append((new_seq, new_score, new_hidden))
+
+                # Select the top-k candidates overall
+                ordered = sorted(all_candidates, key=lambda tup: tup[1], reverse=True)
+                sequences = ordered[:beam_width]
+
+            # Select the best sequence
+            best_sequence, _, _ = sequences[0]
+
+            # 4. Convert to Text:
+            # Convert the best sequence (token IDs) back to text using the tokenizer.
+            subgoal_text = self.config.tokenizer.decode(best_sequence.squeeze(0).tolist())
+            
+            # Remove SOS and EOS tokens from the decoded goal
+            subgoal_text = subgoal_text.replace(self.config.tokenizer.convert_ids_to_tokens(self.config.tokenizer.bos_token_id), "")  # Remove SOS token
+            subgoal_text = subgoal_text.replace(self.config.tokenizer.convert_ids_to_tokens(self.config.tokenizer.eos_token_id), "")  # Remove EOS token
+
+            return subgoal_text.strip()
+        
+    def _get_leaves(self, node: GoalNode) -> List[GoalNode]:
+        """Recursively get all leaf nodes"""
+        if node.is_leaf():
+            return [node]
+        else:
+            leaves = []
+            for child in node.children:
+                leaves.extend(self._get_leaves(child))
+            return leaves
+            
+    def _find_node(self, root: GoalNode, goal_text: str) -> Optional[GoalNode]:
+        """Find a node with given text in the tree"""
+        if root.text == goal_text:
+            return root
+        for child in root.children:
+            found = self._find_node(child, goal_text)
+            if found:
+                return found
+        return None
+        
+    def _prune_tree(self, node: GoalNode):
+        """Recursively prune low importance nodes"""
+        node.children = [
+            child for child in node.children
+            if child.importance >= self.min_importance
+        ]
+        for child in node.children:
+            self._prune_tree(child)
+
+class ByteLatentTransformer(nn.Module):
+    """BLT model with enhanced binary latent memory integration, Dynamic patching, multi-state RNN integration, and SELFGOAL."""
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        activation_dict = {}  # Dictionary to store activations
+   
+        # User Profile Generation Module
+        self.user_profile_generator = nn.LSTM(config.d_model, config.user_profile_dim, num_layers=1, batch_first=True) # Example: LSTM
+
+        # User Profile Storage (Option 1: In-memory dictionary)
+        self.user_profiles = {}  # {user_id: user_profile_embedding}
+
+        # Add a linear layer to project combined embeddings to the desired dimension
+        self.context_projection = nn.Linear(config.d_model * 3 + config.user_profile_dim, config.d_model)
+
+        def get_activation(name):
+            def hook(model, input, output):
+            activation_dict[name] = output.detach()
+            return hook
+
+        # Register forward hooks for specific layers
+        self.local_encoder['transformer'].layers[0].register_forward_hook(get_activation('encoder_layer_0'))
+        self.region_embeddings['visual'].register_forward_hook(get_activation('visual_region'))
+        # ... (register hooks for other layers/regions) #Need to change this to work with region dictionary in progam. 
+
+        # Initialize SELFGOAL components
+        self.goal_manager = GoalManager(config)
+        self.cot_reward = ChainOfThoughtReward(config)
+        
+        # Initialize binary latent memory pool
+        self.memory_pool = BinaryLatentMemoryPool(
+            pool_size=config.memory_size,
+            latent_dim=config.d_model,
+            device=config.device,
+            memory_decay=0.99,
+            importance_threshold=0.1,
+            compression_ratio=0.5,
+            diversity_threshold=0.3
+        )
+
+        # Add parameters for MCTS
+        self.mcts_rollouts = config.initial_mcts_rollouts
+        self.mcts_expansion_factor = config.mcts_expansion_factor
+        self.mcts_c = config.mcts_c
+
+        # Subgoal Generation Module
+        self.subgoal_generator = nn.Sequential(
+            nn.Linear(config.d_model * 2, config.d_model),  # Project combined state to subgoal space
+            nn.ReLU(),
+            nn.Linear(config.d_model, config.d_model),  # Generate subgoal embedding
+        )
+        self.fc_step = nn.Linear(1, config.d_model)
+        self.context_projection = nn.Linear(config.d_model * 3, config.d_model)
+
+        # Subgoal Filtering Module
+        self.subgoal_filter = nn.Sequential(
+            nn.Linear(config.d_model * 2, config.d_model),  # Combine subgoal embeddings
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1),  # Output similarity score
+            nn.Sigmoid()  # Scale to [0, 1]
+        )
+
+        # Subgoal Scoring Module
+        self.subgoal_scorer = nn.Sequential(
+            nn.Linear(config.d_model * 2, config.d_model),  # Combine subgoal and context
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1),  # Output relevance score
+            nn.Sigmoid()  # Scale to [0, 1]
+        )
+
+    def set_mcts_params(self, rollouts: int, expansion_factor: int, c: float):
+        """Sets the parameters for MCTS."""
+        self.mcts_rollouts = rollouts
+        self.mcts_expansion_factor = expansion_factor
+        self.mcts_c = c
+
+    def set_temperature(self, temperature: float):
+      """Sets the temperature for goal selection in the GoalManager."""
+      self.goal_manager.temperature = temperature
+    
+    def save_checkpoint(self, filename: str) -> None:
+        """Save checkpoint"""
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'global_step': self.global_step,
+            'best_val_loss': self.best_val_loss,
+            'config': self.config,
+            'goal_manager_state_dict': self.goal_manager.get_state_dict(),
+            'memory_pool_state_dict': self.memory_pool.get_state_dict()
+        }
+        
+        save_path = self.config.checkpoint_dir / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(checkpoint, save_path)
+    
+    def load_checkpoint(self, checkpoint_path: Path):
+        """Load checkpoint - modified to load goal manager and memory pool"""
+        checkpoint = torch.load(checkpoint_path, map_location=self.config.device)
+        
+        # Load model
+        self.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load optimizer
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Load scheduler
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Load training state
+        self.global_step = checkpoint['global_step']
+        self.best_val_loss = checkpoint['best_val_loss']
+
+        # Load GoalManager state
+        self.goal_manager.load_state_dict(checkpoint['goal_manager_state_dict'])
+
+        # Load MemoryPool state
+        self.memory_pool.load_state_dict(checkpoint['memory_pool_state_dict'])
+
+    def _generate_subgoals(self, goal_embedding: torch.Tensor, context_embedding: torch.Tensor) -> List[torch.Tensor]:
+        """
+        Generates potential subgoals based on the current goal and context embeddings.
+        """
+        # Combine goal and context embeddings as input to the subgoal generator
+        combined_embedding = torch.cat([goal_embedding, context_embedding], dim=-1)
+
+        # Generate a set of subgoal embeddings
+        num_subgoals = self.config.max_goals  # You can adjust the number of subgoals to generate
+        subgoal_embeddings = self.subgoal_generator(combined_embedding.unsqueeze(0).repeat(num_subgoals, 1))
+
+        return subgoal_embeddings
+
+    def _filter_subgoals(self, subgoal_embeddings: List[torch.Tensor]) -> List[torch.Tensor]:
+      """
+      Filters out redundant or highly similar subgoals based on their embeddings.
+      """
+      unique_subgoals = []
+      for i in range(subgoal_embeddings.size(0)):
+          is_unique = True
+          for j in range(i):
+              # Concatenate two subgoal embeddings for similarity comparison
+              combined = torch.cat([subgoal_embeddings[i], subgoal_embeddings[j]], dim=-1)
+              # Get a similarity score from the filter module
+              similarity_score = self.subgoal_filter(combined.unsqueeze(0)).squeeze()
+
+              # If similarity is above threshold, consider them non-unique
+              if similarity_score.item() > self.config.similarity_threshold:
+                  is_unique = False
+                  break
+          
+          if is_unique:
+              unique_subgoals.append(subgoal_embeddings[i])
+
+      return unique_subgoals
+
+    def _score_subgoals(self, subgoal_embeddings: List[torch.Tensor], context_embedding: torch.Tensor) -> List[float]:
+      """
+      Scores subgoals based on their relevance to the current context and their importance.
+      """
+      scores = []
+      for subgoal_embedding in subgoal_embeddings:
+          # Combine subgoal and context embeddings for relevance scoring
+          combined = torch.cat([subgoal_embedding, context_embedding], dim=-1)
+          # Get a relevance score from the scoring module
+          relevance_score = self.subgoal_scorer(combined.unsqueeze(0)).squeeze()
+
+          # Retrieve the importance of the subgoal from the goal manager (if available)
+          # This is a placeholder; you'll need to implement a mechanism to track and retrieve
+          # the importance of subgoals in the GoalManager, potentially using the memory pool.
+          importance = self.goal_manager.get_subgoal_importance(subgoal_embedding) or 1.0
+
+          # Combine relevance and importance to get the final score
+          score = relevance_score.item() * importance
+          scores.append(score)
+
+      return scores
+
+    def _update_memory_with_goals(self, goal_embeddings: List[torch.Tensor], scores: List[float]):
+      """Updates the memory pool with new goal embeddings and their scores."""
+      if not goal_embeddings:
+          return
+
+      # Convert goal embeddings and scores to tensors
+      goal_embeddings_tensor = torch.stack(goal_embeddings)
+      scores_tensor = torch.tensor(scores, device=self.config.device)
+
+      # Update the binary latent memory pool with the new goal embeddings
+      # The binary representation will be computed internally by the memory pool
+      self.memory_pool.update(goal_embeddings_tensor, k=len(goal_embeddings), update_params=True, scores=scores_tensor)
+
+    def _decompose_and_select_subgoals(self, main_goal: str, context: dict) -> List[str]:
+        """
+        Decomposes the main goal into a hierarchy of subgoals and selects the most relevant ones.
+        """
+        # Initialize the goal tree with the main goal
+        self.goal_manager.initialize_tree(main_goal)
+
+        # Encode the main goal and context into embeddings
+        goal_embedding = self._encode_goals([main_goal])
+        context_embedding = self._encode_context(context)
+
+        # Recursively decompose the main goal into a hierarchy of subgoals
+        def decompose_recursively(node: GoalNode, goal_embedding: torch.Tensor, context_embedding: torch.Tensor, level: int = 0, max_levels: int = 3):
+            if level >= max_levels:
+                return
+
+            # Generate, filter, and score subgoals for the current node
+            subgoal_embeddings = self._generate_subgoals(goal_embedding, context_embedding)
+            unique_subgoal_embeddings = self._filter_subgoals(subgoal_embeddings)
+            subgoal_scores = self._score_subgoals(unique_subgoal_embeddings, context_embedding)
+
+            # Update memory with new subgoals and their scores
+            self._update_memory_with_goals(unique_subgoal_embeddings, subgoal_scores)
+
+            # Decode subgoal embeddings into text for creating GoalNode objects
+            subgoals_text = [self._decode_goal(embedding) for embedding in unique_subgoal_embeddings]
+
+            # Add the generated subgoals as children of the current node
+            for subgoal_text in subgoals_text:
+                child_node = node.add_child(subgoal_text)
+                # Recursively decompose each child subgoal
+                decompose_recursively(child_node, goal_embedding, context_embedding, level + 1, max_levels)
+
+        decompose_recursively(self.goal_manager.root, goal_embedding, context_embedding)
+
+        # Select the most relevant subgoals based on the current context using the GoalManager
+        selected_subgoals = self.goal_manager.select_goals(context)
+
+        return selected_subgoals 
+        
+    def _extract_high_level_goal(self, x: torch.Tensor) -> str:
+        """Extract high-level goal from input context using byte-level analysis"""
+        # Convert bytes to text for analysis
+        text = ''.join([chr(b.item()) for b in x.flatten() if 0 <= b.item() < 128])
+        
+        # Look for goal-related keywords and patterns
+        goal_indicators = [
+            'goal:', 'objective:', 'task:', 'aim:', 'purpose:',
+            'achieve', 'accomplish', 'complete', 'solve', 'optimize'
+        ]
+        
+        # Find the most relevant sentence containing goal information
+        sentences = text.split('.')
+        goal_sentence = None
+        max_indicators = 0
+        
+        for sent in sentences:
+            n_indicators = sum(1 for ind in goal_indicators if ind.lower() in sent.lower())
+            if n_indicators > max_indicators:
+                max_indicators = n_indicators
+                goal_sentence = sent
+                
+        if goal_sentence is None:
+            # Default to first sentence if no clear goal indicators
+            goal_sentence = sentences[0] if sentences else "Process and analyze input data"
+            
+        return goal_sentence.strip()
+        
+    def _encode_goals(self, goals: List[str]) -> torch.Tensor:
+        """Encode list of goals into embedding space"""
+        # Convert goals to byte sequences
+        goal_bytes = []
+        for goal in goals:
+            bytes_tensor = torch.tensor([ord(c) for c in goal], device=self.config.device)
+            goal_bytes.append(bytes_tensor)
+            
+        # Pad sequences to same length
+        max_len = max(len(g) for g in goal_bytes)
+        padded_goals = torch.zeros(len(goals), max_len, dtype=torch.long, device=self.config.device)
+        for i, g in enumerate(goal_bytes):
+            padded_goals[i, :len(g)] = g
+            
+        # Get embeddings using the byte embeddings
+        goal_embeds = self.local_encoder['embedding'](padded_goals)
+        
+        # Pool embeddings (mean pooling)
+        goal_embeds = goal_embeds.mean(dim=1)  # [num_goals, d_model]
+        
+        # Combine goal embeddings with attention
+        if len(goals) > 1:
+            # Self-attention over goals
+            attn_weights = torch.matmul(goal_embeds, goal_embeds.transpose(-2, -1))
+            attn_weights = torch.softmax(attn_weights / np.sqrt(goal_embeds.size(-1)), dim=-1)
+            goal_context = torch.matmul(attn_weights, goal_embeds)
+            goal_context = goal_context.mean(dim=0)  # [d_model]
+        else:
+            goal_context = goal_embeds.squeeze(0)  # [d_model]
+            
+        return goal_context
+        
+    def _decompose_and_select_subgoals(self, main_goal: str, context: dict) -> List[str]:
+      """
+      Decomposes the main goal into a hierarchy of subgoals and selects the most relevant ones.
+
+      Args:
+          main_goal: The main goal to be decomposed.
+          context: A dictionary containing contextual information that can guide the decomposition and selection.
+
+      Returns:
+          A list of selected subgoals that are most relevant to the current context and the main goal.
+      """
+      # Initialize the goal tree with the main goal
+      self.goal_manager.initialize_tree(main_goal)
+
+      # Recursively decompose the main goal into a hierarchy of subgoals
+      def decompose_recursively(node: GoalNode, level: int = 0, max_levels: int = 3):
+          if level >= max_levels:
+              return
+          
+          # Generate subgoals for the current node
+          subgoals = self.goal_manager.decompose_goal(node, context)
+          
+          # Add the generated subgoals as children of the current node
+          for subgoal in subgoals:
+              child_node = node.add_child(subgoal)
+              # Recursively decompose each child subgoal
+              decompose_recursively(child_node, level + 1, max_levels)
+
+      decompose_recursively(self.goal_manager.root)
+
+      # Select the most relevant subgoals based on the current context
+      selected_subgoals = self.goal_manager.select_goals(context)
+
+      return selected_subgoals
+
+def generate_user_profile(self, interaction_history: List[Dict], goal_embedding: torch.Tensor, context_embedding: torch.Tensor) -> torch.Tensor:
+        """
+        Generates or updates a user profile embedding based on the interaction history.
+        """
+        # 1. Convert interaction history to embeddings:
+        interaction_embeddings = []
+        for interaction in interaction_history:
+            # Assuming each interaction is a dictionary with 'user_input' and 'model_response'
+            user_input_embed = self.local_encoder['embedding'](interaction['user_input']).mean(dim=1)
+            model_response_embed = self.local_encoder['embedding'](interaction['model_response']).mean(dim=1)
+            interaction_embeddings.append(torch.cat([user_input_embed, model_response_embed], dim=-1))
+
+        interaction_embeddings = torch.stack(interaction_embeddings)  # [seq_len, embedding_dim]
+
+        # 2. Process with User Profile Generator (e.g., LSTM):
+        _, (hidden_state, _) = self.user_profile_generator(interaction_embeddings.unsqueeze(0))  # Add batch dimension
+        user_profile_embedding = hidden_state[-1, :, :]  # Get the final hidden state
+
+        return user_profile_embedding.squeeze(0)  # Remove batch dimension
+
+    def update_user_profile(self, user_id: str, interaction_history: List[Dict], goal_embedding: torch.Tensor, context_embedding: torch.Tensor):
+        """
+        Updates the stored user profile for a given user ID.
+        """
+        user_profile_embedding = self.generate_user_profile(interaction_history, goal_embedding, context_embedding)
+        self.user_profiles[user_id] = user_profile_embedding
+
+    def get_user_profile(self, user_id: str) -> Optional[torch.Tensor]:
+        """
+        Retrieves the stored user profile for a given user ID.
+        """
+        return self.user_profiles.get(user_id)
+
+    def _execute_with_chain_of_thought(self, subgoals: List[str], initial_input: torch.Tensor, user_id: Optional[str] = None) -> Tuple[torch.Tensor, List[Dict]]:
+      """
+      Executes a sequence of subgoals using a Chain-of-Thought approach, where each subgoal
+      builds upon the results of the previous one. Includes self-reflection and backtracking.
+      Now includes user_id to handle user-specific interactions.
+      """
+      current_output = initial_input
+      reasoning_steps = []
+
+      # Add context and memory to initial input
+      combined_input = initial_input
+      if hasattr(self, 'memory_pool'):
+          memory_states = self.memory_pool.get_states()
+          if memory_states.numel() > 0:
+              combined_input = torch.cat([combined_input, memory_states], dim=0)
+
+      # Retrieve or create user profile embedding
+      if user_id is not None:
+        user_profile_embedding = self.get_user_profile(user_id)
+        if user_profile_embedding is None:
+            user_profile_embedding = self.generate_user_profile(
+                interaction_history=[],  # Start with an empty history for new users
+                goal_embedding=self._encode_goals([subgoals[0]]),  # Encode the first subgoal as an initial goal
+                context_embedding=self._encode_context({'input': initial_input})  # Encode the initial input as context
+            )
+            self.update_user_profile(user_id, [], self._encode_goals([subgoals[0]]), self._encode_context({'input': initial_input}))
+      else:
+          user_profile_embedding = None
+
+      for subgoal in subgoals:
+          # Update the current goal for this step
+          self.current_goal = subgoal
+
+          # Prepare the context for this subgoal
+          context = {
+              'input': combined_input,
+              'step': len(reasoning_steps) + 1
+          }
+
+          # Add user profile embedding to the context if available
+          if user_profile_embedding is not None:
+              context['user_profile'] = user_profile_embedding
+
+          # Execute the current subgoal
+          subgoal_output = self.forward(combined_input, goal_context=self._encode_goals([subgoal]), context_embedding=self._encode_context(context))
+
+          # Update the current output with the result of the subgoal execution
+          current_output = subgoal_output['hidden_states']
+
+          # Track the reasoning step for CoT reward computation
+          reasoning_steps.append({
+              'type': 'subgoal_execution',
+              'goal': subgoal,
+              'input': combined_input.detach(),
+              'output': subgoal_output['hidden_states'].detach()
+          })
+
+          # Compute confidence scores for this step
+          with torch.no_grad():
+              logits = self.local_decoder['output'](subgoal_output['hidden_states'])
+              confidence = self.cot_reward.compute_confidence_score(logits)
+              reasoning_steps[-1]['confidence'] = confidence.mean().item()
+
+          # Reflection step (if needed)
+          if hasattr(self, 'metacognitive'):
+            reflection_needed = self.metacognitive(current_output, memory_states)['needs_reflection']
+            if reflection_needed:
+                reflection = self.metacognitive(current_output, memory_states)['reflection']
+                if len(reasoning_steps) > 1:
+                    previous_step = reasoning_steps.pop()
+                    current_output = previous_step['input']
+                    reasoning_steps.append({
+                        'type': 'reflection',
+                        'reflection': reflection.detach(),
+                        'previous_output': previous_step['output']
+                    })
+
+          # Update combined input for the next subgoal
+          combined_input = current_output
+          if hasattr(self, 'memory_pool'):
+              memory_states = self.memory_pool.get_states()
+              if memory_states.numel() > 0:
+                  combined_input = torch.cat([combined_input, memory_states], dim=0)
+
+          # Update user profile based on the interaction (if a user ID is provided)
+          if user_id is not None:
+              self.update_user_profile(user_id, reasoning_steps, self._encode_goals([subgoal]), self._encode_context(context))
+
+      # Compute the final CoT reward based on the entire reasoning path
+      final_reward = self.cot_reward.compute_reward(torch.stack([step['output'] for step in reasoning_steps if 'output' in step]))
+
+      return current_output, reasoning_steps, final_reward
+
+    def forward(self, x: torch.Tensor, goal_context: Optional[torch.Tensor] = None,
+            brain_regions: Optional[Dict[str, torch.Tensor]] = None,
+            rnn_states: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+            sensory_data: Optional[torch.Tensor] = None,
+            tactile_data: Optional[torch.Tensor] = None,
+            audio_data: Optional[torch.Tensor] = None,
+            moral_principles: Optional[List[str]] = None,
+            user_profile: Optional[Dict] = None) -> Dict[str, torch.Tensor]:
+        """Forward pass implementing BLT workflow with RNN processing, brain region integration, and SELFGOAL"""
+        # Initialize SELFGOAL for this forward pass if not already initialized
+        if not hasattr(self, 'current_goal'):
+            # Extract high-level goal from input context
+            self.current_goal = self._extract_high_level_goal(x)
+            self.goal_manager.initialize_tree(self.current_goal)
+            
+        # Get current context for SELFGOAL
+        context = {
+            'input': x,
+            'brain_regions': brain_regions,
+            'rnn_states': rnn_states,
+            'step': getattr(self, 'step_counter', 0)
+        }
+        
+        # Select relevant subgoals using SELFGOAL
+        selected_goals = self.goal_manager.select_goals(context)
+        
+        # Track reasoning steps for CoT reward
+        reasoning_steps = []
+        confidence_scores = []
+        
+        # Compute n-gram hash embeddings with goal-aware processing
+        batch_size = x.size(0)
+        seq_len = x.size(1)
+        byte_embeds = self.local_encoder['embedding'](x)
+        
+        # Enhance embeddings with goal information if provided
+        if goal_context is not None:
+          byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
+        else:
+          # If goal_context is not provided, encode the selected goals
+          goal_context = self._encode_goals(selected_goals)
+          byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
+
+        # Concatenate system prompt embeddings to byte embeddings
+        if 'system_prompt' in x:
+            system_prompt_embeds = x['system_prompt']['embeds']
+            byte_embeds = torch.cat([system_prompt_embeds, byte_embeds], dim=1)  # Concatenate along the sequence length dimension
+            
+            # Adjust sequence length to account for the system prompt
+            seq_len += system_prompt_embeds.size(1)
+
+        # Add n-gram hash embeddings with CoT tracking
+        for n in range(3, 9):  # n-grams from 3 to 8 as in paper
+            # Create n-grams
+            ngrams = []
+            for i in range(seq_len - n + 1):
+                ngram = x[:, i:i+n]  # [batch_size, n]
+                # Compute hash (using FNV-1a for better distribution)
+                ngram_hash = torch.zeros(batch_size, dtype=torch.long, device=x.device)
+                FNV_PRIME = 16777619
+                FNV_OFFSET = 2166136261
+                for j in range(n):
+                    ngram_hash = ((ngram_hash * FNV_PRIME) % self.config.hash_vocab_size) ^ ngram[:, j]
+                ngrams.append(ngram_hash)
+            
+            if ngrams:  # Only if we have n-grams
+                ngram_tensor = torch.stack(ngrams, dim=1)  # [batch_size, seq_len-n+1]
+                ngram_embeds = self.hash_embeddings[f'ngram_{n}'](ngram_tensor)  # [batch_size, seq_len-n+1, d_model]
+                
+                # Track reasoning step
+                reasoning_steps.append({
+                    'type': f'ngram_{n}',
+                    'embeddings': ngram_embeds.detach(),
+                    'description': f'Computing {n}-gram hash embeddings'
+                })
+                
+                # Add to corresponding positions in byte embeddings with positional weighting
+                for i in range(seq_len - n + 1):
+                    # Weight based on position (center positions get higher weight)
+                    pos_weights = torch.linspace(0.5, 1.0, n, device=x.device)
+                    pos_weights = pos_weights.view(1, -1, 1)  # [1, n, 1]
+                    byte_embeds[:, i:i+n] += ngram_embeds[:, i].unsqueeze
+
+
+
+
+```python
+                    pos_weights = pos_weights.view(1, -1, 1)  # [1, n, 1]
+                    byte_embeds[:, i:i+n] += ngram_embeds[:, i].unsqueeze(1) * pos_weights / n
+                    
+                # Compute confidence scores for this n-gram level
+                with torch.no_grad():
+                    logits = self.local_decoder['output'](ngram_embeds)
+                    confidence = self.cot_reward.compute_confidence_score(logits)
+                    confidence_scores.append(confidence)
+        
+        # Normalize embeddings
+        byte_embeds = byte_embeds / (len(self.hash_embeddings) + 1)  # +1 for original byte embeddings
+        
+        # Process fMRI data if available
+        if brain_regions is not None:
+            # Project fMRI data to embedding space for each region
+            region_embeds = {}
+            for region, activity in brain_regions.items():
+                # Project activity to region space
+                region_embed = self.region_embeddings[region](activity)
+                
+                # Apply region-specific attention
+                region_attn, _ = self.region_attention[region](
+                    byte_embeds,
+                    region_embed.unsqueeze(0),
+                    region_embed.unsqueeze(0)
+                )
+                
+                # Gate with activity level
+                gate = torch.sigmoid(activity.mean())
+                region_embeds[region] = gate * region_attn + (1 - gate) * byte_embeds
+            
+            # Fuse region embeddings with anatomical constraints
+            fused_embeds = self._anatomically_constrained_fusion(region_embeds)
+            
+            # Combine with byte embeddings
+            for region, embed in fused_embeds.items():
+                # Weight based on region's relevance to current text segment
+                relevance = torch.cosine_similarity(byte_embeds, embed, dim=-1)
+                relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                byte_embeds = byte_embeds + relevance.unsqueeze(-1) * embed
+        
+        # Pass sensory, tactile, and audio data to the BrainRegionMapper along with other data
+        region_embeds = self.region_mapper.map_to_regions(
+            {'text_embeds': byte_embeds},
+            fmri_data=brain_regions,
+            region_texts=None,
+            region_images=None,
+            sensory_data=sensory_data,
+            tactile_data=tactile_data,
+            audio_data=audio_data
+        )
+
+        # Combine region embeddings with byte embeddings
+        combined_embeds = byte_embeds
+        for region, embed in region_embeds.items():
+            combined_embeds = torch.cat([combined_embeds, embed.unsqueeze(1)], dim=1)
+
+        # Use the combined embeddings as input to the encoder
+        hidden = combined_embeds
+        
+        encoder_states = []
+        
+        # Process through encoder layers with fMRI integration and CoT tracking
+        for layer_idx, (layer, cross_attn) in enumerate(zip(
+            self.local_encoder['transformer'].layers,
+            self.local_encoder['cross_attention']
+        )):
+            # Transformer layer
+            hidden = layer(hidden)
+            encoder_states.append(hidden)
+            
+            # Track reasoning step
+            reasoning_steps.append({
+                'type': f'encoder_layer_{layer_idx}',
+                'embeddings': hidden.detach(),
+                'description': f'Processing through encoder layer {layer_idx}'
+            })
+            
+            # Compute confidence score for this layer
+            with torch.no_grad():
+                logits = self.local_decoder['output'](hidden)
+                confidence = self.cot_reward.compute_confidence_score(logits)
+                confidence_scores.append(confidence)
+            
+            # Compute entropy for dynamic patching
+            entropy = self.entropy_model(hidden).squeeze(-1)
+            patch_boundaries = entropy > self.config.entropy_threshold
+            
+            # Map text features to brain regions with CoT tracking
+            if brain_regions is not None:
+                # Project text features to each brain region's space based on region's function
+                region_projections = {}
+                for region, activity in brain_regions.items():
+                    # Track reasoning step for this region
+                    reasoning_steps.append({
+                        'type': f'brain_region_{region}',
+                        'embeddings': hidden.detach(),
+                        'description': f'Processing {region} brain region features'
+                    })
+                    
+                    # Project text to region space based on region's function
+                    if region == 'visual':
+                        # Visual regions process low-level features (bytes, chars)
+                        region_text = self.region_embeddings[region](hidden[:, :2])
+                        reasoning_steps.append({
+                            'type': 'visual_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing low-level visual features'
+                        })
+                    elif region in ['language', 'semantic']:
+                        # Language regions process words and sentences
+                        region_text = self.region_embeddings[region](hidden[:, 2:4])
+                        reasoning_steps.append({
+                            'type': 'language_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing language and semantic features'
+                        })
+                    elif region in ['memory', 'executive']:
+                        # Memory/executive regions process higher-level context
+                        region_text = self.region_embeddings[region](hidden[:, 4:])
+                        reasoning_steps.append({
+                            'type': 'memory_executive_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing memory and executive control features'
+                        })
+                    else:
+                        # Other regions process full sequence
+                        region_text = self.region_embeddings[region](hidden)
+                        reasoning_steps.append({
+                            'type': f'general_processing_{region}',
+                            'embeddings': region_text.detach(),
+                            'description': f'Processing general features for {region}'
+                        })
+                    
+                    # Compute confidence score for this region
+                    with torch.no_grad():
+                        logits = self.local_decoder['output'](region_text)
+                        confidence = self.cot_reward.compute_confidence_score(logits)
+                        confidence_scores.append(confidence)
+                    
+                    # Get region-specific attention with activity gating
+                    region_attn, _ = self.region_attention[region](
+                        region_text,
+                        activity.unsqueeze(0),
+                        activity.unsqueeze(0)
+                    )
+                    
+                    # Apply activity-based gating
+                    gate = torch.sigmoid(activity.mean())
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
+                
+                # Fuse region projections with anatomical constraints
+                region_embeds = self._anatomically_constrained_fusion(region_projections)
+                
+                # Integrate region embeddings back into hidden states
+                for region, embed in region_embeds.items():
+                    # Weight based on region's relevance and hierarchical level
+                    if region == 'visual':
+                        # Visual regions influence early layers more
+                        relevance = torch.cosine_similarity(hidden[:, :2], embed, dim=-1)
+                    elif region in ['language', 'semantic']:
+                        # Language regions influence middle layers
+                        relevance = torch.cosine_similarity(hidden[:, 2:4], embed, dim=-1)
+                    elif region in ['memory', 'executive']:
+                        # Memory/executive regions influence later layers
+                        relevance = torch.cosine_similarity(hidden[:, 4:], embed, dim=-1)
+                    else:
+                        # Other regions influence all layers
+                        relevance = torch.cosine_similarity(hidden, embed, dim=-1)
+                    
+                    # Apply temperature scaling and integrate
+                    relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                    hidden = hidden + relevance.unsqueeze(-1) * embed
+            
+            # Create patches based on entropy and process through RNN
+            patches = []
+            start_idx = 0
+            for i, is_boundary in enumerate(patch_boundaries):
+                if is_boundary or i == len(patch_boundaries) - 1:
+                    if i + 1 - start_idx >= self.config.min_patch_size:
+                        patch = hidden[start_idx:i+1]
+                        if len(patch) <= self.config.max_patch_size:
+                            # Get patch embedding
+                            patch_embed = patch.mean(dim=0)
+                            
+            # Process through RNN and enhanced binary memory
+            # 1. RNN processing for state tracking
+            rnn_out, rnn_states = self.latent_transformer(
+                patch_embed.unsqueeze(0),  # Add batch dimension
+                rnn_states
+            )
+            
+            # 2. Extract binary latent states
+            binary_latents = self.memory_pool.state_encoder(rnn_out)
+            binary_states = (binary_latents > 0.5).bool()
+            
+            # 3. Update and retrieve from binary memory pool with binary states
+            self.memory_pool.update(rnn_out, self.config.memory_topk, binary_states)
+            memory_states = self.memory_pool.get_states()
+            
+            # 4. Track binary latent statistics
+            with torch.no_grad():
+                binary_sparsity = 1.0 - binary_states.float().mean().item()
+                binary_entropy = -torch.mean(
+                    binary_states.float() * torch.log2(binary_states.float() + 1e-10) +
+                    (1 - binary_states.float()) * torch.log2(1 - binary_states.float() + 1e-10)
+                ).item()
+                
+                self.memory_pool.usage_stats['binary_stats'].append({
+                    'sparsity': binary_sparsity,
+                    'entropy': binary_entropy,
+                    'active_bits': binary_states.sum().item(),
+                    'total_bits': binary_states.numel()
+                })
+            
+            # 3. Combine RNN and memory states with importance-based weighting
+            memory_importance = torch.sigmoid(self.compression_policy(memory_states))
+            combined_out = (
+                (1 - memory_importance) * rnn_out + 
+                memory_importance * memory_states
+            )
+            
+            # 4. Apply attention-based state selection with memory integration
+            if rnn_states is not None:
+                # Get hidden states from all layers
+                h_states = torch.stack([h for h, _ in rnn_states])  # [num_layers, batch, hidden]
+                
+                # Get memory states
+                memory_keys = self.memory.key_embed1.weight  # Get memory keys
+                
+                # Concatenate RNN and memory states
+                combined_states = torch.cat([
+                    h_states.transpose(0, 1),  # [batch, num_layers, hidden]
+                    memory_keys.unsqueeze(0).expand(h_states.size(1), -1, -1)  # [batch, num_keys, hidden]
+                ], dim=1)
+                
+                # Compute attention scores over combined states
+                attn_scores, _ = self.state_attention(
+                    patch_embed.unsqueeze(0),  # Query: current patch
+                    combined_states,  # Keys: RNN + memory states
+                    combined_states   # Values: RNN + memory states
+                )
+                
+                # Select states based on attention
+                selected_state = (attn_scores @ combined_states).squeeze(0)
+                patches.append(selected_state)
+            else:
+                patches.append(combined_out.squeeze(0))
+            
+            # Update start index for next patch
+            start_idx = i + 1
+                            
+            
+            # Handle case where no patches were created
+            if not patches:
+                patches = [hidden.mean(dim=0)]
+            patches = torch.stack(patches)
+            
+            # Cross attention between bytes and patches
+            hidden, _ = cross_attn(hidden, patches, patches)
+        
+        # Global latent transformer processing
+        latent_states = self.latent_transformer(patches)
+        
+        # Local decoder processing with brain region integration
+        decoder_states = []
+        hidden = byte_embeds
+        
+        # Process through decoder layers with hierarchical brain region integration
+        for layer_idx, (layer, cross_attn) in enumerate(zip(self.local_decoder['transformer'].layers, self.local_decoder['cross_attention'])):
+            # Cross attention with patches
+            hidden, _ = cross_attn(hidden, latent_states, latent_states)
+            
+            # Integrate brain region information if available
+            if brain_regions is not None:
+                # Project text features to each brain region's space based on layer depth
+                region_projections = {}
+                for region, activity in brain_regions.items():
+                    # Early layers focus on low-level features
+                    if layer_idx < len(self.local_decoder['transformer'].layers) // 3:
+                        if region in ['visual', 'sensory_temporal', 'sensory_parietal']:
+                            # Project early layers to sensory regions
+                            region_text = self.region_embeddings[region](hidden[:, :2])
+                    # Middle layers focus on language and semantic processing
+                    elif layer_idx < 2 * len(self.local_decoder['transformer'].layers) // 3:
+                        if region in ['language', 'semantic']:
+                            # Project middle layers to language regions
+                            region_text = self.region_embeddings[region](hidden[:, 2:4])
+                    # Late layers focus on high-level integration
+                    else:
+                        if region in ['memory', 'executive', 'integration']:
+                            # Project late layers to higher-order regions
+                            region_text = self.region_embeddings[region](hidden[:, 4:])
+                    
+                    # Get region-specific attention with activity gating
+                    region_attn, _ = self.region_attention[region](
+                        region_text,
+                        activity.unsqueeze(0),
+                        activity.unsqueeze(0)
+                    )
+                    
+                    # Apply activity-based gating
+                    gate = torch.sigmoid(activity.mean())
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
+                
+                # Fuse region projections with anatomical constraints
+                region_embeds = self._anatomically_constrained_fusion(region_projections)
+                
+                # Integrate region embeddings back into hidden states
+                for region, embed in region_embeds.items():
+                    # Weight based on region's relevance and layer depth
+                    if layer_idx < len(self.local_decoder['transformer'].layers) // 3:
+                        # Early layers: stronger sensory influence
+                        if region in ['visual', 'sensory_temporal', 'sensory_parietal']:
+                            relevance = torch.cosine_similarity(hidden[:, :2], embed, dim=-1)
+                    elif layer_idx < 2 * len(self.local_decoder['transformer'].layers) // 3:
+                        # Middle layers: stronger language influence
+                        if region in ['language', 'semantic']:
+                            relevance = torch.cosine_similarity(hidden[:, 2:4], embed, dim=-1)
+                    else:
+                        # Late layers: stronger high-level influence
+                        if region in ['memory', 'executive', 'integration']:
+                            relevance = torch.cosine_similarity(hidden[:, 4:], embed, dim=-1)
+                    
+                    # Apply temperature scaling and integrate
+                    relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                    hidden = hidden + relevance.unsqueeze(-1) * embed
+            
+            # Transformer layer
+            hidden = layer(hidden)
+            decoder_states.append(hidden)
+        
+        # Predict next byte
+        logits = self.local_decoder['output'](hidden)
+        
+        # FLAME factuality-aware alignment
+        if self.training:
+            # Compute factuality score for self-alignment
+            factuality_score = self._compute_factuality_score(hidden)
+            
+            # Apply factuality-aware loss weighting
+            if self.is_fact_based:  # For fact-based instructions
+                # Use own knowledge (from pre-training) for supervision
+                supervision_weight = factuality_score
+            else:  # For non-fact-based instructions
+                # Use human demonstrations for supervision
+                supervision_weight = 1.0
+                
+            # Scale logits based on factuality alignment
+            logits = logits * supervision_weight.unsqueeze(-1)
+            
+            # Store factuality metrics for monitoring
+            self.factuality_metrics = {
+                'factuality_score': factuality_score.mean().item(),
+                'supervision_weight': supervision_weight.mean().item()
+            }
+        
+        return {
+            'logits': logits,
+            'patches': patches,
+            'latent_states': latent_states,
+            'encoder_states': encoder_states,
+            'decoder_states': decoder_states,
+            'entropy': entropy,
+            'patch_boundaries': patch_boundaries,
+            'factuality_metrics': getattr(self, 'factuality_metrics', None)
+        }
+        # Update combined input for the next subgoal, including the current output and memory states
+        combined_input = current_output
+        if hasattr(self, 'memory_pool'):
+            memory_states = self.memory_pool.get_states()
+            if memory_states.numel() > 0:
+                combined_input = torch.cat([combined_input, memory_states], dim=0)
+
+    # After executing all subgoals, compute the final CoT reward based on the entire reasoning path
+    final_reward = self.cot_reward.compute_reward(torch.stack([step['output'] for step in reasoning_steps if 'output' in step]))
+
+    return current_output, reasoning_steps, final_reward
+        # N-gram hash embeddings
+        self.hash_embeddings = nn.ModuleDict({
+            f'ngram_{n}': nn.Embedding(config.hash_vocab_size, config.d_model)
+            for n in range(3, 9)  # n-grams from 3 to 8 as in paper
+        })
+        
+        # Local encoder for byte-level processing
+        self.local_encoder = nn.ModuleDict({
+            'embedding': nn.Embedding(256, config.d_model),
+            'transformer': nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    dim_feedforward=config.d_model * 4,
+                    dropout=config.dropout,
+                    batch_first=True
+                ),
+                num_layers=config.encoder_layers
+            ),
+            'cross_attention': nn.ModuleList([
+                nn.MultiheadAttention(
+                    config.d_model,
+                    config.n_heads,
+                    dropout=config.dropout,
+                    batch_first=True
+                ) for _ in range(config.encoder_layers)
+            ])
+        })
+        
+        # Global latent transformer combining MSRNN and shared memory
+        self.latent_transformer = MultiStateRNN(
+            hidden_size=config.d_model,
+            num_layers=config.n_layers
+        )
+        
+        # Shared memory for efficient compression and retrieval
+        self.memory = ProductKeyMemory(
+            dim=config.d_model,
+            num_keys=config.memory_size,  # Default 1024 half-keys
+            topk=config.memory_topk,      # Default 32
+            add_silu=True
+        )
+        
+        # Memory compression policy
+        self.compression_policy = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1)
+        )
+        
+        # Attention for state selection
+        self.state_attention = nn.MultiheadAttention(
+            embed_dim=config.d_model,
+            num_heads=config.n_heads,
+            dropout=config.dropout,
+            batch_first=True
+        )
+        
+        # State compression policy
+        self.compression_policy = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1)
+        )
+        
+        # Local decoder for byte-level generation
+        self.local_decoder = nn.ModuleDict({
+            'transformer': nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    dim_feedforward=config.d_model * 4,
+                    dropout=config.dropout,
+                    batch_first=True
+                ),
+                num_layers=config.decoder_layers
+            ),
+            'cross_attention': nn.ModuleList([
+                nn.MultiheadAttention(
+                    config.d_model,
+                    config.n_heads,
+                    dropout=config.dropout,
+                    batch_first=True
+                ) for _ in range(config.decoder_layers)
+            ]),
+            'output': nn.Linear(config.d_model, 256)  # Predict next byte
+        })
+        
+        # Entropy model for dynamic patching
+        self.entropy_model = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1)
+        )
+        
+        # Region embeddings for brain integration
+        self.region_embeddings = nn.ModuleDict({
+            region: nn.Linear(config.d_model, config.region_dim)
+            for region in [
+                'visual', 'language', 'memory', 'attention', 'executive',
+                'semantic', 'integration', 'sensory_temporal', 'sensory_parietal'
+            ]
+        })
+        
+        # Region-specific attention
+        self.region_attention = nn.ModuleDict({
+            region: nn.MultiheadAttention(
+                config.region_dim,
+                num_heads=4,
+                dropout=config.dropout,
+                batch_first=True
+            )
+            for region in self.region_embeddings.keys()
+        })
+        
+        # Cross-region fusion
+        self.region_fusion = CrossModalFusion(
+            config.region_dim,
+            config.n_heads,
+            config.dropout,
+            len(self.region_embeddings)
+        )
+        
+        # Anatomical distance matrix (from BrainLM paper coordinates)
+        self.register_buffer('anatomical_distances', self._compute_anatomical_distances())
+        
+    def _compute_anatomical_distances(self) -> torch.Tensor:
+        """Compute pairwise anatomical distances between brain regions"""
+        regions = list(self.region_embeddings.keys())
+        n_regions = len(regions)
+        distances = torch.zeros(n_regions, n_regions)
+        
+        for i, region1 in enumerate(regions):
+            for j, region2 in enumerate(regions):
+                if i != j:
+                    # Get coordinates for both regions
+                    coords1 = torch.tensor(self.regions[region1]['mni_coords'])
+                    coords2 = torch.tensor(self.regions[region2]['mni_coords'])
+                    
+                    # Compute minimum distance between any pair of coordinates
+                    pairwise_dist = torch.cdist(coords1, coords2)
+                    min_dist = pairwise_dist.min().item()
+                    
+                    # Convert to weight (closer = higher weight)
+                    distances[i, j] = 1.0 / (1.0 + min_dist / 50.0)  # 50mm normalization
+        
+        return distances
+        
+    def _anatomically_constrained_fusion(
+        self,
+        region_embeds: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Fuse region embeddings while respecting anatomical constraints"""
+        regions = list(region_embeds.keys())
+        n_regions = len(regions)
+        
+        # Stack embeddings
+        stacked_embeds = torch.stack([region_embeds[r] for r in regions])  # [n_regions, seq_len, d_model]
+        
+        # Get anatomical weights for these regions
+        region_indices = [list(self.region_embeddings.keys()).index(r) for r in regions]
+        weights = self.anatomical_distances[region_indices][:, region_indices]  # [n_regions, n_regions]
+        
+        # Apply pathway-specific weights from BrainLM paper
+        pathway_weights = {
+            ('visual', 'semantic'): 1.2,      # Strong visual-semantic pathway
+            ('semantic', 'language'): 1.2,    # Strong semantic-language pathway
+            ('language', 'memory'): 1.1,      # Language-memory integration
+            ('memory', 'executive'): 1.1,     # Memory-executive control
+            ('attention', 'executive'): 1.2,  # Strong attention-executive pathway
+            ('integration', 'semantic'): 1.1, # Integration with semantics
+            ('integration', 'memory'): 1.1,   # Integration with memory
+            ('integration', 'executive'): 1.1, # Integration with control
+            ('sensory_temporal', 'language'): 1.2,  # Strong connection for sensory processing
+            ('sensory_temporal', 'semantic'): 1.2,  # Sensory-semantic integration
+            ('sensory_temporal', 'memory'): 1.1,    # Sensory memory integration
+            ('sensory_parietal', 'attention'): 1.2, # Strong connection for tactile attention
+            ('sensory_parietal', 'executive'): 1.1  # Executive control of tactile processing
+        }
+        
+        for i, region1 in enumerate(regions):
+            for j, region2 in enumerate(regions):
+                if (region1, region2) in pathway_weights:
+                    weights[i, j] *= pathway_weights[(region1, region2)]
+                elif (region2, region1) in pathway_weights:
+                    weights[i, j] *= pathway_weights[(region2, region1)]
+        
+        # Additional boost for integration region
+        integration_idx = [i for i, r in enumerate(regions) if r == 'integration']
+        if integration_idx:
+            weights[integration_idx, :] *= 1.1  # 10% boost for integration pathways
+            weights[:, integration_idx] *= 1.1
+        
+        # Normalize weights
+        weights = weights / weights.sum(dim=1, keepdim=True)
+        
+        # Weighted fusion
+        fused_embeds = {}
+        for i, region in enumerate(regions):
+            # Compute weighted sum of embeddings
+            weighted_sum = (weights[i].unsqueeze(-1).unsqueeze(-1) * stacked_embeds).sum(dim=0)
+            
+            # Add residual connection
+            fused_embeds[region] = weighted_sum + region_embeds[region]
+        
+        return fused_embeds
+
+    def forward(self, x: torch.Tensor, goal_context: Optional[torch.Tensor] = None, brain_regions: Optional[Dict[str, torch.Tensor]] = None, rnn_states: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None) -> Dict[str, torch.Tensor]:
+        """Forward pass implementing BLT workflow with RNN processing, brain region integration, and SELFGOAL"""
+        # Initialize SELFGOAL for this forward pass if not already initialized
+        if not hasattr(self, 'current_goal'):
+            # Extract high-level goal from input context
+            self.current_goal = self._extract_high_level_goal(x)
+            self.goal_manager.initialize_tree(self.current_goal)
+
+        # Pass sensory, tactile, and audio data to the BrainRegionMapper along with other data
+        region_embeds = self.region_mapper.map_to_regions(
+            token_embeds,
+            fmri_data=brain_regions,  # Assuming this is how you pass fMRI data
+            region_texts=None,  # You might need to adjust this
+            region_images=None,  # You might need to adjust this
+            sensory_data=sensory_data,
+            tactile_data=tactile_data,
+            audio_data=audio_data
+        )
+            
+        # Get current context for SELFGOAL
+        context = {
+            'input': x,
+            'brain_regions': brain_regions,
+            'rnn_states': rnn_states,
+            'step': getattr(self, 'step_counter', 0)
+        }
+        
+        # Select relevant subgoals using SELFGOAL
+        selected_goals = self.goal_manager.select_goals(context)
+        
+        # Track reasoning steps for CoT reward
+        reasoning_steps = []
+        confidence_scores = []
+        
+        # Compute n-gram hash embeddings with goal-aware processing
+        batch_size = x.size(0)
+        seq_len = x.size(1)
+        byte_embeds = self.local_encoder['embedding'](x)
+        
+        # Enhance embeddings with goal information if provided
+        if goal_context is not None:
+          byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
+        else:
+          # If goal_context is not provided, encode the selected goals
+          goal_context = self._encode_goals(selected_goals)
+          byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
+
+        # Concatenate system prompt embeddings to byte embeddings
+        if 'system_prompt' in x:
+            system_prompt_embeds = x['system_prompt']['embeds']
+            byte_embeds = torch.cat([system_prompt_embeds, byte_embeds], dim=1)  # Concatenate along the sequence length dimension
+            
+            # Adjust sequence length to account for the system prompt
+            seq_len += system_prompt_embeds.size(1)
+
+        # Add n-gram hash embeddings with CoT tracking
+        for n in range(3, 9):  # n-grams from 3 to 8 as in paper
+            # Create n-grams
+            ngrams = []
+            for i in range(seq_len - n + 1):
+                ngram = x[:, i:i+n]  # [batch_size, n]
+                # Compute hash (using FNV-1a for better distribution)
+                ngram_hash = torch.zeros(batch_size, dtype=torch.long, device=x.device)
+                FNV_PRIME = 16777619
+                FNV_OFFSET = 2166136261
+                for j in range(n):
+                    ngram_hash = ((ngram_hash * FNV_PRIME) % self.config.hash_vocab_size) ^ ngram[:, j]
+                ngrams.append(ngram_hash)
+            
+            if ngrams:  # Only if we have n-grams
+                ngram_tensor = torch.stack(ngrams, dim=1)  # [batch_size, seq_len-n+1]
+                ngram_embeds = self.hash_embeddings[f'ngram_{n}'](ngram_tensor)  # [batch_size, seq_len-n+1, d_model]
+                
+                # Track reasoning step
+                reasoning_steps.append({
+                    'type': f'ngram_{n}',
+                    'embeddings': ngram_embeds.detach(),
+                    'description': f'Computing {n}-gram hash embeddings'
+                })
+                
+                # Add to corresponding positions in byte embeddings with positional weighting
+                for i in range(seq_len - n + 1):
+                    # Weight based on position (center positions get higher weight)
+                    pos_weights = torch.linspace(0.5, 1.0, n, device=x.device)
+                    pos_weights = pos_weights.view(1, -1, 1)  # [1, n, 1]
+                    byte_embeds[:, i:i+n] += ngram_embeds[:, i].unsqueeze(1) * pos_weights / n
+                    
+                # Compute confidence scores for this n-gram level
+                with torch.no_grad():
+                    logits = self.local_decoder['output'](ngram_embeds)
+                    confidence = self.cot_reward.compute_confidence_score(logits)
+                    confidence_scores.append(confidence)
+        
+        # Normalize embeddings
+        byte_embeds = byte_embeds / (len(self.hash_embeddings) + 1)  # +1 for original byte embeddings
+        
+        # Process fMRI data if available
+        if brain_regions is not None:
+            # Project fMRI data to embedding space for each region
+            region_embeds = {}
+            for region, activity in brain_regions.items():
+                # Project activity to region space
+                region_embed = self.region_embeddings[region](activity)
+                
+                # Apply region-specific attention
+                region_attn, _ = self.region_attention[region](
+                    byte_embeds,
+                    region_embed.unsqueeze(0),
+                    region_embed.unsqueeze(0)
+                )
+                
+                # Gate with activity level
+                gate = torch.sigmoid(activity.mean())
+                region_embeds[region] = gate * region_attn + (1 - gate) * byte_embeds
+            
+            # Fuse region embeddings with anatomical constraints
+            fused_embeds = self._anatomically_constrained_fusion(region_embeds)
+            
+            # Combine with byte embeddings
+            for region, embed in fused_embeds.items():
+                # Weight based on region's relevance to current text segment
+                relevance = torch.cosine_similarity(byte_embeds, embed, dim=-1)
+                relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                byte_embeds = byte_embeds + relevance.unsqueeze(-1) * embed
+        
+        encoder_states = []
+        hidden = byte_embeds
+        
+        # Process through encoder layers with fMRI integration and CoT tracking
+        for layer_idx, (layer, cross_attn) in enumerate(zip(
+            self.local_encoder['transformer'].layers,
+            self.local_encoder['cross_attention']
+        )):
+            # Transformer layer
+            hidden = layer(hidden)
+            encoder_states.append(hidden)
+            
+            # Track reasoning step
+            reasoning_steps.append({
+                'type': f'encoder_layer_{layer_idx}',
+                'embeddings
+
+
+
+                'embeddings': hidden.detach(),
+                'description': f'Processing through encoder layer {layer_idx}'
+            })
+            
+            # Compute confidence score for this layer
+            with torch.no_grad():
+                logits = self.local_decoder['output'](hidden)
+                confidence = self.cot_reward.compute_confidence_score(logits)
+                confidence_scores.append(confidence)
+            
+            # Compute entropy for dynamic patching
+            entropy = self.entropy_model(hidden).squeeze(-1)
+            patch_boundaries = entropy > self.config.entropy_threshold
+            
+            # Map text features to brain regions with CoT tracking
+            if brain_regions is not None:
+                # Project text features to each brain region's space based on region's function
+                region_projections = {}
+                for region, activity in brain_regions.items():
+                    # Track reasoning step for this region
+                    reasoning_steps.append({
+                        'type': f'brain_region_{region}',
+                        'embeddings': hidden.detach(),
+                        'description': f'Processing {region} brain region features'
+                    })
+                    
+                    # Project text to region space based on region's function
+                    if region == 'visual':
+                        # Visual regions process low-level features (bytes, chars)
+                        region_text = self.region_embeddings[region](hidden[:, :2])
+                        reasoning_steps.append({
+                            'type': 'visual_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing low-level visual features'
+                        })
+                    elif region in ['language', 'semantic']:
+                        # Language regions process words and sentences
+                        region_text = self.region_embeddings[region](hidden[:, 2:4])
+                        reasoning_steps.append({
+                            'type': 'language_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing language and semantic features'
+                        })
+                    elif region in ['memory', 'executive']:
+                        # Memory/executive regions process higher-level context
+                        region_text = self.region_embeddings[region](hidden[:, 4:])
+                        reasoning_steps.append({
+                            'type': 'memory_executive_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing memory and executive control features'
+                        })
+                    else:
+                        # Other regions process full sequence
+                        region_text = self.region_embeddings[region](hidden)
+                        reasoning_steps.append({
+                            'type': f'general_processing_{region}',
+                            'embeddings': region_text.detach(),
+                            'description': f'Processing general features for {region}'
+                        })
+                    
+                    # Compute confidence score for this region
+                    with torch.no_grad():
+                        logits = self.local_decoder['output'](region_text)
+                        confidence = self.cot_reward.compute_confidence_score(logits)
+                        confidence_scores.append(confidence)
+                    
+                    # Get region-specific attention with activity gating
+                    region_attn, _ = self.region_attention[region](
+                        region_text,
+                        activity.unsqueeze(0),
+                        activity.unsqueeze(0)
+                    )
+                    
+                    # Apply activity-based gating
+                    gate = torch.sigmoid(activity.mean())
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
+                
+                # Fuse region projections with anatomical constraints
+                region_embeds = self._anatomically_constrained_fusion(region_projections)
+                
+                # Integrate region embeddings back into hidden states
+                for region, embed in region_embeds.items():
+                    # Weight based on region's relevance and hierarchical level
+                    if region == 'visual':
+                        # Visual regions influence early layers more
+                        relevance = torch.cosine_similarity(hidden[:, :2], embed, dim=-1)
+                    elif region in ['language', 'semantic']:
+                        # Language regions influence middle layers
+                        relevance = torch.cosine_similarity(hidden[:, 2:4], embed, dim=-1)
+                    elif region in ['memory', 'executive']:
+                        # Memory/executive regions influence later layers
+                        relevance = torch.cosine_similarity(hidden[:, 4:], embed, dim=-1)
+                    else:
+                        # Other regions influence all layers
+                        relevance = torch.cosine_similarity(hidden, embed, dim=-1)
+                    
+                    # Apply temperature scaling and integrate
+                    relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                    hidden = hidden + relevance.unsqueeze(-1) * embed
+            
+            # Create patches based on entropy and process through RNN
+            patches = []
+            start_idx = 0
+            for i, is_boundary in enumerate(patch_boundaries):
+                if is_boundary or i == len(patch_boundaries) - 1:
+                    if i + 1 - start_idx >= self.config.min_patch_size:
+                        patch = hidden[start_idx:i+1]
+                        if len(patch) <= self.config.max_patch_size:
+                            # Get patch embedding
+                            patch_embed = patch.mean(dim=0)
+                            
+            # Process through RNN and enhanced binary memory
+            # 1. RNN processing for state tracking
+            rnn_out, rnn_states = self.latent_transformer(
+                patch_embed.unsqueeze(0),  # Add batch dimension
+                rnn_states
+            )
+            
+            # 2. Extract binary latent states
+            binary_latents = self.memory_pool.state_encoder(rnn_out)
+            binary_states = (binary_latents > 0.5).bool()
+            
+            # 3. Update and retrieve from binary memory pool with binary states
+            self.memory_pool.update(rnn_out, self.config.memory_topk, binary_states)
+            memory_states = self.memory_pool.get_states()
+            
+            # 4. Track binary latent statistics
+            with torch.no_grad():
+                binary_sparsity = 1.0 - binary_states.float().mean().item()
+                binary_entropy = -torch.mean(
+                    binary_states.float() * torch.log2(binary_states.float() + 1e-10) +
+                    (1 - binary_states.float()) * torch.log2(1 - binary_states.float() + 1e-10)
+                ).item()
+                
+                self.memory_pool.usage_stats['binary_stats'].append({
+                    'sparsity': binary_sparsity,
+                    'entropy': binary_entropy,
+                    'active_bits': binary_states.sum().item(),
+                    'total_bits': binary_states.numel()
+                })
+            
+            # 3. Combine RNN and memory states with importance-based weighting
+            memory_importance = torch.sigmoid(self.compression_policy(memory_states))
+            combined_out = (
+                (1 - memory_importance) * rnn_out + 
+                memory_importance * memory_states
+            )
+            
+            # 4. Apply attention-based state selection with memory integration
+            if rnn_states is not None:
+                # Get hidden states from all layers
+                h_states = torch.stack([h for h, _ in rnn_states])  # [num_layers, batch, hidden]
+                
+                # Get memory states
+                memory_keys = self.memory.key_embed1.weight  # Get memory keys
+                
+                # Concatenate RNN and memory states
+                combined_states = torch.cat([
+                    h_states.transpose(0, 1),  # [batch, num_layers, hidden]
+                    memory_keys.unsqueeze(0).expand(h_states.size(1), -1, -1)  # [batch, num_keys, hidden]
+                ], dim=1)
+                
+                # Compute attention scores over combined states
+                attn_scores, _ = self.state_attention(
+                    patch_embed.unsqueeze(0),  # Query: current patch
+                    combined_states,  # Keys: RNN + memory states
+                    combined_states   # Values: RNN + memory states
+                )
+                
+                # Select states based on attention
+                selected_state = (attn_scores @ combined_states).squeeze(0)
+                patches.append(selected_state)
+            else:
+                patches.append(combined_out.squeeze(0))
+            
+            # Update start index for next patch
+            start_idx = i + 1
+                            
+            
+            # Handle case where no patches were created
+            if not patches:
+                patches = [hidden.mean(dim=0)]
+            patches = torch.stack(patches)
+            
+            # Cross attention between bytes and patches
+            hidden, _ = cross_attn(hidden, patches, patches)
+        
+        # Global latent transformer processing
+        latent_states = self.latent_transformer(patches)
+        
+        # Local decoder processing with brain region integration
+        decoder_states = []
+        hidden = byte_embeds
+        
+        # Process through decoder layers with hierarchical brain region integration
+        for layer_idx, (layer, cross_attn) in enumerate(zip(self.local_decoder['transformer'].layers, self.local_decoder['cross_attention'])):
+            # Cross attention with patches
+            hidden, _ = cross_attn(hidden, latent_states, latent_states)
+            
+            # Integrate brain region information if available
+            if brain_regions is not None:
+                # Project text features to each brain region's space based on layer depth
+                region_projections = {}
+                for region, activity in brain_regions.items():
+                    # Early layers focus on low-level features
+                    if layer_idx < len(self.local_decoder['transformer'].layers) // 3:
+                        if region in ['visual', 'sensory_temporal', 'sensory_parietal']:
+                            # Project early layers to sensory regions
+                            region_text = self.region_embeddings[region](hidden[:, :2])
+                    # Middle layers focus on language and semantic processing
+                    elif layer_idx < 2 * len(self.local_decoder['transformer'].layers) // 3:
+                        if region in ['language', 'semantic']:
+                            # Project middle layers to language regions
+                            region_text = self.region_embeddings[region](hidden[:, 2:4])
+                    # Late layers focus on high-level integration
+                    else:
+                        if region in ['memory', 'executive', 'integration']:
+                            # Project late layers to higher-order regions
+                            region_text = self.region_embeddings[region](hidden[:, 4:])
+                    
+                    # Get region-specific attention with activity gating
+                    region_attn, _ = self.region_attention[region](
+                        region_text,
+                        activity.unsqueeze(0),
+                        activity.unsqueeze(0)
+                    )
+                    
+                    # Apply activity-based gating
+                    gate = torch.sigmoid(activity.mean())
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
+                
+                # Fuse region projections with anatomical constraints
+                region_embeds = self._anatomically_constrained_fusion(region_projections)
+                
+                # Integrate region embeddings back into hidden states
+                for region, embed in region_embeds.items():
+                    # Weight based on region's relevance and layer depth
+                    if layer_idx < len(self.local_decoder['transformer'].layers) // 3:
+                        # Early layers: stronger sensory influence
+                        if region in ['visual', 'sensory_temporal', 'sensory_parietal']:
+                            relevance = torch.cosine_similarity(hidden[:, :2], embed, dim=-1)
+                    elif layer_idx < 2 * len(self.local_decoder['transformer'].layers) // 3:
+                        # Middle layers: stronger language influence
+                        if region in ['language', 'semantic']:
+                            relevance = torch.cosine_similarity(hidden[:, 2:4], embed, dim=-1)
+                    else:
+                        # Late layers: stronger high-level influence
+                        if region in ['memory', 'executive', 'integration']:
+                            relevance = torch.cosine_similarity(hidden[:, 4:], embed, dim=-1)
+                    
+                    # Apply temperature scaling and integrate
+                    relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                    hidden = hidden + relevance.unsqueeze(-1) * embed
+            
+            # Transformer layer
+            hidden = layer(hidden)
+            decoder_states.append(hidden)
+        
+        # Predict next byte
+        logits = self.local_decoder['output'](hidden)
+        
+        # FLAME factuality-aware alignment
+        if self.training:
+            # Compute factuality score for self-alignment
+            factuality_score = self._compute_factuality_score(hidden)
+            
+            # Apply factuality-aware loss weighting
+            if self.is_fact_based:  # For fact-based instructions
+                # Use own knowledge (from pre-training) for supervision
+                supervision_weight = factuality_score
+            else:  # For non-fact-based instructions
+                # Use human demonstrations for supervision
+                supervision_weight = 1.0
+                
+            # Scale logits based on factuality alignment
+            logits = logits * supervision_weight.unsqueeze(-1)
+            
+            # Store factuality metrics for monitoring
+            self.factuality_metrics = {
+                'factuality_score': factuality_score.mean().item(),
+                'supervision_weight': supervision_weight.mean().item()
+            }
+        
+        return {
+            'logits': logits,
+            'patches': patches,
+            'latent_states': latent_states,
+            'encoder_states': encoder_states,
+            'decoder_states': decoder_states,
+            'entropy': entropy,
+            'patch_boundaries': patch_boundaries,
+            'factuality_metrics': getattr(self, 'factuality_metrics', None)
+        }
+        # Update combined input for the next subgoal, including the current output and memory states
+        combined_input = current_output
+        if hasattr(self, 'memory_pool'):
+            memory_states = self.memory_pool.get_states()
+            if memory_states.numel() > 0:
+                combined_input = torch.cat([combined_input, memory_states], dim=0)
+
+    # After executing all subgoals, compute the final CoT reward based on the entire reasoning path
+    final_reward = self.cot_reward.compute_reward(torch.stack([step['output'] for step in reasoning_steps if 'output' in step]))
+
+    return current_output, reasoning_steps, final_reward
+        # N-gram hash embeddings
+        self.hash_embeddings = nn.ModuleDict({
+            f'ngram_{n}': nn.Embedding(config.hash_vocab_size, config.d_model)
+            for n in range(3, 9)  # n-grams from 3 to 8 as in paper
+        })
+        
+        # Local encoder for byte-level processing
+        self.local_encoder = nn.ModuleDict({
+            'embedding': nn.Embedding(256, config.d_model),
+            'transformer': nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    dim_feedforward=config.d_model * 4,
+                    dropout=config.dropout,
+                    batch_first=True
+                ),
+                num_layers=config.encoder_layers
+            ),
+            'cross_attention': nn.ModuleList([
+                nn.MultiheadAttention(
+                    config.d_model,
+                    config.n_heads,
+                    dropout=config.dropout,
+                    batch_first=True
+                ) for _ in range(config.encoder_layers)
+            ])
+        })
+        
+        # Global latent transformer combining MSRNN and shared memory
+        self.latent_transformer = MultiStateRNN(
+            hidden_size=config.d_model,
+            num_layers=config.n_layers
+        )
+        
+        # Shared memory for efficient compression and retrieval
+        self.memory = ProductKeyMemory(
+            dim=config.d_model,
+            num_keys=config.memory_size,  # Default 1024 half-keys
+            topk=config.memory_topk,      # Default 32
+            add_silu=True
+        )
+        
+        # Memory compression policy
+        self.compression_policy = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1)
+        )
+        
+        # Attention for state selection
+        self.state_attention = nn.MultiheadAttention(
+            embed_dim=config.d_model,
+            num_heads=config.n_heads,
+            dropout=config.dropout,
+            batch_first=True
+        )
+        
+        # State compression policy
+        self.compression_policy = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1)
+        )
+        
+        # Local decoder for byte-level generation
+        self.local_decoder = nn.ModuleDict({
+            'transformer': nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    dim_feedforward=config.d_model * 4,
+                    dropout=config.dropout,
+                    batch_first=True
+                ),
+                num_layers=config.decoder_layers
+            ),
+            'cross_attention': nn.ModuleList([
+                nn.MultiheadAttention(
+                    config.d_model,
+                    config.n_heads,
+                    dropout=config.dropout,
+                    batch_first=True
+                ) for _ in range(config.decoder_layers)
+            ]),
+            'output': nn.Linear(config.d_model, 256)  # Predict next byte
+        })
+        
+        # Entropy model for dynamic patching
+        self.entropy_model = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.ReLU(),
+            nn.Linear(config.d_model, 1)
+        )
+        
+        # Region embeddings for brain integration
+        self.region_embeddings = nn.ModuleDict({
+            region: nn.Linear(config.d_model, config.region_dim)
+            for region in [
+                'visual', 'language', 'memory', 'attention', 'executive',
+                'semantic', 'integration', 'sensory_temporal', 'sensory_parietal'
+            ]
+        })
+        
+        # Region-specific attention
+        self.region_attention = nn.ModuleDict({
+            region: nn.MultiheadAttention(
+                config.region_dim,
+                num_heads=4,
+                dropout=config.dropout,
+                batch_first=True
+            )
+            for region in self.region_embeddings.keys()
+        })
+        
+        # Cross-region fusion
+        self.region_fusion = CrossModalFusion(
+            config.region_dim,
+            config.n_heads,
+            config.dropout,
+            len(self.region_embeddings)
+        )
+        
+        # Anatomical distance matrix (from BrainLM paper coordinates)
+        self.register_buffer('anatomical_distances', self._compute_anatomical_distances())
+        
+    def _compute_anatomical_distances(self) -> torch.Tensor:
+        """Compute pairwise anatomical distances between brain regions"""
+        regions = list(self.region_embeddings.keys())
+        n_regions = len(regions)
+        distances = torch.zeros(n_regions, n_regions)
+        
+        for i, region1 in enumerate(regions):
+            for j, region2 in enumerate(regions):
+                if i != j:
+                    # Get coordinates for both regions
+                    coords1 = torch.tensor(self.regions[region1]['mni_coords'])
+                    coords2 = torch.tensor(self.regions[region2]['mni_coords'])
+                    
+                    # Compute minimum distance between any pair of coordinates
+                    pairwise_dist = torch.cdist(coords1, coords2)
+                    min_dist = pairwise_dist.min().item()
+                    
+                    # Convert to weight (closer = higher weight)
+                    distances[i, j] = 1.0 / (1.0 + min_dist / 50.0)  # 50mm normalization
+        
+        return distances
+        
+    def _anatomically_constrained_fusion(
+        self,
+        region_embeds: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Fuse region embeddings while respecting anatomical constraints"""
+        regions = list(region_embeds.keys())
+        n_regions = len(regions)
+        
+        # Stack embeddings
+        stacked_embeds = torch.stack([region_embeds[r] for r in regions])  # [n_regions, seq_len, d_model]
+        
+        # Get anatomical weights for these regions
+        region_indices = [list(self.region_embeddings.keys()).index(r) for r in regions]
+        weights = self.anatomical_distances[region_indices][:, region_indices]  # [n_regions, n_regions]
+        
+        # Apply pathway-specific weights from BrainLM paper
+        pathway_weights = {
+            ('visual', 'semantic'): 1.2,      # Strong visual-semantic pathway
+            ('semantic', 'language'): 1.2,    # Strong semantic-language pathway
+            ('language', 'memory'): 1.1,      # Language-memory integration
+            ('memory', 'executive'): 1.1,     # Memory-executive control
+            ('attention', 'executive'): 1.2,  # Strong attention-executive pathway
+            ('integration', 'semantic'): 1.1, # Integration with semantics
+            ('integration', 'memory'): 1.1,   # Integration with memory
+            ('integration', 'executive'): 1.1, # Integration with control
+            ('sensory_temporal', 'language'): 1.2,  # Strong connection for sensory processing
+            ('sensory_temporal', 'semantic'): 1.2,  # Sensory-semantic integration
+            ('sensory_temporal', 'memory'): 1.1,    # Sensory memory integration
+            ('sensory_parietal', 'attention'): 1.2, # Strong connection for tactile attention
+            ('sensory_parietal', 'executive'): 1.1  # Executive control of tactile processing
+        }
+        
+        for i, region1 in enumerate(regions):
+            for j, region2 in enumerate(regions):
+                if (region1, region2) in pathway_weights:
+                    weights[i, j] *= pathway_weights[(region1, region2)]
+                elif (region2, region1) in pathway_weights:
+                    weights[i, j] *= pathway_weights[(region2, region1)]
+        
+        # Additional boost for integration region
+        integration_idx = [i for i, r in enumerate(regions) if r == 'integration']
+        if integration_idx:
+            weights[integration_idx, :] *= 1.1  # 10% boost for integration pathways
+            weights[:, integration_idx] *= 1.1
+        
+        # Normalize weights
+        weights = weights / weights.sum(dim=1, keepdim=True)
+        
+        # Weighted fusion
+        fused_embeds = {}
+        for i, region in enumerate(regions):
+            # Compute weighted sum of embeddings
+            weighted_sum = (weights[i].unsqueeze(-1).unsqueeze(-1) * stacked_embeds).sum(dim=0)
+            
+            # Add residual connection
+            fused_embeds[region] = weighted_sum + region_embeds[region]
+        
+        return fused_embeds
+
+    def forward(self, x: torch.Tensor, goal_context: Optional[torch.Tensor] = None, brain_regions: Optional[Dict[str, torch.Tensor]] = None, rnn_states: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None) -> Dict[str, torch.Tensor]:
+        """Forward pass implementing BLT workflow with RNN processing, brain region integration, and SELFGOAL"""
+        # Initialize SELFGOAL for this forward pass if not already initialized
+        if not hasattr(self, 'current_goal'):
+            # Extract high-level goal from input context
+            self.current_goal = self._extract_high_level_goal(x)
+            self.goal_manager.initialize_tree(self.current_goal)
+
+        # Pass sensory, tactile, and audio data to the BrainRegionMapper along with other data
+        region_embeds = self.region_mapper.map_to_regions(
+            token_embeds,
+            fmri_data=brain_regions,  # Assuming this is how you pass fMRI data
+            region_texts=None,  # You might need to adjust this
+            region_images=None,  # You might need to adjust this
+            sensory_data=sensory_data,
+            tactile_data=tactile_data,
+            audio_data=audio_data
+        )
+            
+        # Get current context for SELFGOAL
+        context = {
+            'input': x,
+            'brain_regions': brain_regions,
+            'rnn_states': rnn_states,
+            'step': getattr(self, 'step_counter', 0)
+        }
+        
+        # Select relevant subgoals using SELFGOAL
+        selected_goals = self.goal_manager.select_goals(context)
+        
+        # Track reasoning steps for CoT reward
+        reasoning_steps = []
+        confidence_scores = []
+        
+        # Compute n-gram hash embeddings with goal-aware processing
+        batch_size = x.size(0)
+        seq_len = x.size(1)
+        byte_embeds = self.local_encoder['embedding'](x)
+        
+        # Enhance embeddings with goal information if provided
+        if goal_context is not None:
+          byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
+        else:
+          # If goal_context is not provided, encode the selected goals
+          goal_context = self._encode_goals(selected_goals)
+          byte_embeds = byte_embeds + goal_context.unsqueeze(1).expand(-1, seq_len, -1)
+
+        # Concatenate system prompt embeddings to byte embeddings
+        if 'system_prompt' in x:
+            system_prompt_embeds = x['system_prompt']['embeds']
+            byte_embeds = torch.cat([system_prompt_embeds, byte_embeds], dim=1)  # Concatenate along the sequence length dimension
+            
+            # Adjust sequence length to account for the system prompt
+            seq_len += system_prompt_embeds.size(1)
+
+        # Add n-gram hash embeddings with CoT tracking
+        for n in range(3, 9):  # n-grams from 3 to 8 as in paper
+            # Create n-grams
+            ngrams = []
+            for i in range(seq_len - n + 1):
+                ngram = x[:, i:i+n]  # [batch_size, n]
+                # Compute hash (using FNV-1a for better distribution)
+                ngram_hash = torch.zeros(batch_size, dtype=torch.long, device=x.device)
+                FNV_PRIME = 16777619
+                FNV_OFFSET = 2166136261
+                for j in range(n):
+                    ngram_hash = ((ngram_hash * FNV_PRIME) % self.config.hash_vocab_size) ^ ngram[:, j]
+                ngrams.append(ngram_hash)
+            
+            if ngrams:  # Only if we have n-grams
+                ngram_tensor = torch.stack(ngrams, dim=1)  # [batch_size, seq_len-n+1]
+                ngram_embeds = self.hash_embeddings[f'ngram_{n}'](ngram_tensor)  # [batch_size, seq_len-n+1, d_model]
+                
+                # Track reasoning step
+                reasoning_steps.append({
+                    'type': f'ngram_{n}',
+                    'embeddings': ngram_embeds.detach(),
+                    'description': f'Computing {n}-gram hash embeddings'
+                })
+                
+                # Add to corresponding positions in byte embeddings with positional weighting
+                for i in range(seq_len - n + 1):
+                    # Weight based on position (center positions get higher weight)
+                    pos_weights = torch.linspace(0.5, 1.0, n, device=x.device)
+                    pos_weights = pos_weights.view(1, -1, 1)  # [1, n, 1]
+                    byte_embeds[:, i:i+n] += ngram_embeds[:, i].unsqueeze(1) * pos_weights / n
+                    
+                # Compute confidence scores for this n-gram level
+                with torch.no_grad():
+                    logits = self.local_decoder['output'](ngram_embeds)
+                    confidence = self.cot_reward.compute_confidence_score(logits)
+                    confidence_scores.append(confidence)
+        
+        # Normalize embeddings
+        byte_embeds = byte_embeds / (len(self.hash_embeddings) + 1)  # +1 for original byte embeddings
+        
+        # Process fMRI data if available
+        if brain_regions is not None:
+            # Project fMRI data to embedding space for each region
+            region_embeds = {}
+            for region, activity in brain_regions.items():
+                # Project activity to region space
+                region_embed = self.region_embeddings[region](activity)
+                
+                # Apply region-specific attention
+                region_attn, _ = self.region_attention[region](
+                    byte_embeds,
+                    region_embed.unsqueeze(0),
+                    region_embed.unsqueeze(0)
+                )
+                
+                # Gate with activity level
+                gate = torch.sigmoid(activity.mean())
+                region_embeds[region] = gate * region_attn + (1 - gate) * byte_embeds
+            
+            # Fuse region embeddings with anatomical constraints
+            fused_embeds = self._anatomically_constrained_fusion(region_embeds)
+            
+            # Combine with byte embeddings
+            for region, embed in fused_embeds.items():
+                # Weight based on region's relevance to current text segment
+                relevance = torch.cosine_similarity(byte_embeds, embed, dim=-1)
+                relevance = torch.softmax(relevance / 0.1, dim=0)  # Temperature of 0.1
+                byte_embeds = byte_embeds + relevance.unsqueeze(-1) * embed
+        
+        encoder_states = []
+        hidden = byte_embeds
+        
+        # Process through encoder layers with fMRI integration and CoT tracking
+        for layer_idx, (layer, cross_attn) in enumerate(zip(
+            self.local_encoder['transformer'].layers,
+            self.local_encoder['cross_attention']
+        )):
+            # Transformer layer
+            hidden = layer(hidden)
+            encoder_states.append(hidden)
+            
+            # Track reasoning step
+            reasoning_steps.append({
+                'type': f'encoder_layer_{layer_idx}',
+                'embeddings': hidden.detach(),
+                'description': f'Processing through encoder layer {layer_idx}'
+            })
+            
+            # Compute confidence score for this layer
+            with torch.no_grad():
+                logits = self.local_decoder['output'](hidden)
+                confidence = self.cot_reward.compute_confidence_score(logits)
+                confidence_scores.append(confidence)
+            
+            # Compute entropy for dynamic patching
+            entropy = self.entropy_model(hidden).squeeze(-1)
+            patch_boundaries = entropy > self.config.entropy_threshold
+            
+            # Map text features to brain regions with CoT tracking
+            if brain_regions is not None:
+                # Project text features to each brain region's space based on region's function
+                region_projections = {}
+                for region, activity in brain_regions.items():
+                    # Track reasoning step for this region
+                    reasoning_steps.append({
+                        'type': f'brain_region_{region}',
+                        'embeddings': hidden.detach(),
+                        'description': f'Processing {region} brain region features'
+                    })
+                    
+                    # Project text to region space based on region's function
+                    if region == 'visual':
+                        # Visual regions process low-level features (bytes, chars)
+                        region_text = self.region_embeddings[region](hidden[:, :2])
+                        reasoning_steps.append({
+                            'type': 'visual_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing low-level visual features'
+                        })
+                    elif region in ['language', 'semantic']:
+                        # Language regions process words and sentences
+                        region_text = self.region_embeddings[region](hidden[:, 2:4])
+                        reasoning_steps.append({
+                            'type': 'language_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing language and semantic features'
+                        })
+                    elif region in ['memory', 'executive']:
+                        # Memory/executive regions process higher-level context
+                        region_text = self.region_embeddings[region](hidden[:, 4:])
+                        reasoning_steps.append({
+                            'type': 'memory_executive_processing',
+                            'embeddings': region_text.detach(),
+                            'description': 'Processing memory and executive control features'
+                        })
+                    else:
+                        # Other regions process full sequence
+                        region_text = self.region_embeddings[region](hidden)
+                        reasoning_steps.append({
+                            'type': f'general_processing_{region}',
+                            'embeddings': region_text.detach(),
+                            'description': f'Processing general features for {region}'
+                        })
+                    
+                    # Compute confidence score for this region
+                    with torch.no_grad():
+                        logits = self.local_decoder['output'](region_text)
+                        confidence = self.cot_reward.compute_confidence_score(logits)
+                        confidence_scores.append(confidence)
+                    
+                    # Get region-specific attention with activity gating
+                    region_attn, _ = self.region_attention[region](
+                        region_text,
+                        activity.unsqueeze(0),
+                        activity.unsqueeze(0)
+                    )
+                    
+                    # Apply activity-based gating
+                    gate = torch.sigmoid(activity.mean())
+                    region_projections[region] = gate * region_attn + (1 - gate) * region_text
+                
+                # Fuse region projections with anatomical constraints
+                region_embeds = self._anatomically_constrained_fusion(region_projections)
+                
+                # Integrate region embeddings back into
