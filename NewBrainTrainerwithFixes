@@ -6618,10 +6618,15 @@ def main():
         
         logger.info("Training completed successfully!")
         
-        # Save final model
-        final_path = args.checkpoint_dir / "final_model.pt"
-        logger.info(f"Saving final model to {final_path}")
-        trainer.save_checkpoint("final_model.pt")
+       # Save final model
+      final_path_pt = args.checkpoint_dir / "final_model.pt"
+      final_path_safetensors = args.checkpoint_dir / "final_model.safetensors"
+
+      logger.info(f"Saving final model (pytorch) to {final_path_pt}")
+      trainer.save_model(final_path_pt)  # Use save_model for saving in .pt format
+
+      logger.info(f"Saving final model (safetensors) to {final_path_safetensors}")
+      trainer.save_model(final_path_safetensors, safe_serialization=True) # Use save_model with safe_serialization for .safetensors
         
     except Exception as e:
         logger.error(f"Training failed: {str(e)}")
