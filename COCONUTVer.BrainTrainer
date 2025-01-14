@@ -35,6 +35,16 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_har
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import hdbscan
+from minisom import MiniSom
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
+import math
+import time
+from torch.utils.data import DataLoader
+import threading
+from queue import Queue
+import queue
 
 system_prompt="You are a well-trained AI assistant. ## Important!!!!!!!!! When you answer questions, your thinking should be completed in a latent space and then be decoded into English, \
 but there are 2 exceptions to responses being in English, one is the reference to the original text, and the other is that mathematics should use markdown format, and the output in \
@@ -2242,10 +2252,132 @@ class GoalManager:
             self._prune_tree(child)
 
 class ByteLatentTransformer(nn.Module):
-    """BLT model with enhanced binary latent memory integration, Dynamic patching, multi-state RNN integration, and SELFGOAL."""
-    def __init__(self, config):
+    """BLT model with enhanced binary latent memory integration, brain-inspired components, episodic memory, Dynamic patching, multi-state RNN integration, and SELFGOAL."""
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        nhead: int = 8,
+        num_layers: int = 6,
+        vocab_size: int = 256,  # Byte-level vocabulary
+        feedforward_dim: int = 2048,
+        dropout: float = 0.1,
+        mem_pool_size: int = 100,
+        latent_dim: int = 64,
+        device: str = 'cuda',
+        memory_decay: float = 0.99,
+        importance_threshold: float = 0.1,
+        compression_ratio: float = 0.5,
+        diversity_threshold: float = 0.3,
+        initial_temperature: float = 1.0,
+        min_temperature: float = 0.1,
+        max_temperature: float = 2.0,
+        temperature_decay: float = 0.99,
+        initial_exploration: float = 0.1,
+        exploration_decay: float = 0.995,
+        n_star: int = 4,
+        episodic_mem_capacity: int = 1000,
+        episodic_mem_config: Optional[EpisodicMemoryConfig] = None,
+        retrieval_k: int = 5,
+        use_retrieval: bool = True,
+        initial_consolidation_interval: int = 1000,
+        min_consolidation_interval: int = 100,
+        max_consolidation_interval: int = 5000,
+        consolidation_adaptation_rate: float = 0.1,
+        memory_integration_method: str = 'attention',
+        episodic_transfer_rate: float = 0.2,
+        transfer_similarity_threshold: float = 0.8,
+        importance_update_factor: float = 0.5,
+        novelty_factor: float = 0.5,  # Weight for novelty in importance calculation
+        relevance_factor: float = 0.3,  # Weight for relevance in importance calculation
+        reward_factor: float = 0.2,  # Weight for reward in importance calculation
+        importance_threshold_episodic: float = 0.2,  # Minimum importance for an experience to be considered for transfer
+        prediction_error_factor: float = 0.4,  # Weight for prediction error in surprise calculation
+        learning_progress_factor: float = 0.6  # Weight for learning progress in surprise calculation
+
+    ):
         super().__init__()
-        self.config = config
+
+        self.d_model = d_model
+        self.device = device
+        self.use_retrieval = use_retrieval
+        self.retrieval_k = retrieval_k
+        self.initial_consolidation_interval = initial_consolidation_interval
+        self.min_consolidation_interval = min_consolidation_interval
+        self.max_consolidation_interval = max_consolidation_interval
+        self.consolidation_adaptation_rate = consolidation_adaptation_rate
+        self.consolidation_interval = initial_consolidation_interval # Start with the initial interval
+        self.memory_integration_method = memory_integration_method
+        self.consolidation_step_count = 0
+        self.episodic_transfer_rate = episodic_transfer_rate
+        self.transfer_similarity_threshold = transfer_similarity_threshold
+        self.importance_update_factor = importance_update_factor
+        self.novelty_factor = novelty_factor
+        self.relevance_factor = relevance_factor
+        self.reward_factor = reward_factor
+        self.importance_threshold_episodic = importance_threshold_episodic
+        self.prediction_error_factor = prediction_error_factor
+        self.learning_progress_factor = learning_progress_factor
+
+        # Embedding layer for byte-level inputs
+        self.embedding = nn.Embedding(vocab_size, d_model)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=feedforward_dim,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # Binary latent memory module
+        self.memory_pool = BinaryLatentMemoryPool(
+            pool_size=mem_pool_size,
+            latent_dim=latent_dim,
+            device=device,
+            memory_decay=memory_decay,
+            importance_threshold=importance_threshold,
+            compression_ratio=compression_ratio,
+            diversity_threshold=diversity_threshold,
+            initial_temperature=initial_temperature,
+            min_temperature=min_temperature,
+            max_temperature=max_temperature,
+            temperature_decay=temperature_decay,
+            initial_exploration=initial_exploration,
+            exploration_decay=exploration_decay,
+            n_star=n_star
+        )
+
+        # Output layer to produce logits over vocabulary
+        self.fc_out = nn.Linear(d_model, vocab_size)
+
+        # Episodic Memory
+        if episodic_mem_config is None:
+            episodic_mem_config = EpisodicMemoryConfig(capacity=episodic_mem_capacity)
+        self.episodic_memory = HierarchicalEpisodicMemory(
+            capacity=episodic_mem_capacity,
+            config=episodic_mem_config
+        )
+
+        # Memory Integration Mechanisms
+        if self.memory_integration_method == 'attention':
+            self.memory_attention = nn.MultiheadAttention(
+                embed_dim=d_model,
+                num_heads=nhead,
+                dropout=dropout,
+                batch_first=True
+            )
+        elif self.memory_integration_method == 'gating':
+            self.memory_gate = nn.Sequential(
+                nn.Linear(d_model * 2, d_model),
+                nn.Sigmoid()
+            )
+        
+        # Consolidation thread and flag
+        self.consolidation_thread = None
+        self.stop_consolidation_thread = False
 
         activation_dict = {}  # Dictionary to store activations
    
@@ -2257,6 +2389,175 @@ class ByteLatentTransformer(nn.Module):
 
         # Add a linear layer to project combined embeddings to the desired dimension
         self.context_projection = nn.Linear(config.d_model * 3 + config.user_profile_dim, config.d_model)
+
+def calculate_importance(self, experience: Dict, context_embedding: torch.Tensor) -> float:
+        """
+        Calculates the importance score for an experience in episodic memory.
+
+        Args:
+            experience: A dictionary representing the experience.
+            context_embedding: The embedding of the context associated with the experience.
+
+        Returns:
+            The importance score (float).
+        """
+
+        # 1. Novelty (example: based on cluster assignment or distance to cluster centroids)
+        cluster_id = self.get_cluster_for_experience(experience)
+        if cluster_id is not None:
+            cluster_centroid = self.episodic_memory.clusters[cluster_id]['centroid']
+            novelty_score = 1.0 - F.cosine_similarity(context_embedding, cluster_centroid.unsqueeze(0)).item()
+        else:
+            # Handle cases where the experience doesn't belong to any cluster yet
+            novelty_score = 1.0  # Assign maximum novelty
+
+        # 2. Relevance (example: based on similarity to current goal or context)
+        if 'goal' in experience:
+          relevance_score = F.cosine_similarity(
+              context_embedding,
+              experience['goal'].unsqueeze(0),
+              dim=1
+          ).item()
+        else:
+          relevance_score = 0.0 # Provide default value if the goal is not available
+
+        # 3. Reward (example: based on the final reward associated with the experience)
+        reward_score = experience.get('final_reward', 0.0)  # Get reward from experience, default to 0
+
+        # 4. Surprise (example: based on prediction error or learning progress)
+        surprise_score = self.calculate_surprise(experience)
+
+        # Combine the factors with weighted averaging
+        importance_score = (
+            self.novelty_factor * novelty_score +
+            self.relevance_factor * relevance_score +
+            self.reward_factor * reward_score +
+            (1 - self.novelty_factor - self.relevance_factor - self.reward_factor) * surprise_score
+        )
+
+        return importance_score
+
+  def calculate_importance(self, experience: Dict, context_embedding: torch.Tensor) -> float:
+        """
+        Calculates the importance score for an experience in episodic memory.
+
+        Args:
+            experience: A dictionary representing the experience.
+            context_embedding: The embedding of the context associated with the experience.
+
+        Returns:
+            The importance score (float).
+        """
+
+        # 1. Novelty (example: based on cluster assignment or distance to cluster centroids)
+        cluster_id = self.get_cluster_for_experience(experience)
+        if cluster_id is not None:
+            cluster_centroid = self.episodic_memory.clusters[cluster_id]['centroid']
+            novelty_score = 1.0 - F.cosine_similarity(context_embedding, cluster_centroid.unsqueeze(0)).item()
+        else:
+            # Handle cases where the experience doesn't belong to any cluster yet
+            novelty_score = 1.0  # Assign maximum novelty
+
+        # 2. Relevance (example: based on similarity to current goal or context)
+        if 'goal' in experience:
+          relevance_score = F.cosine_similarity(
+              context_embedding,
+              experience['goal'].unsqueeze(0),
+              dim=1
+          ).item()
+        else:
+          relevance_score = 0.0 # Provide default value if the goal is not available
+
+        # 3. Reward (example: based on the final reward associated with the experience)
+        reward_score = experience.get('final_reward', 0.0)  # Get reward from experience, default to 0
+
+        # 4. Surprise (example: based on prediction error or learning progress)
+        surprise_score = self.calculate_surprise(experience)
+
+        # Combine the factors with weighted averaging
+        importance_score = (
+            self.novelty_factor * novelty_score +
+            self.relevance_factor * relevance_score +
+            self.reward_factor * reward_score +
+            (1 - self.novelty_factor - self.relevance_factor - self.reward_factor) * surprise_score
+        )
+
+        return importance_score
+
+    def get_cluster_for_experience(self, experience: Dict) -> Optional[int]:
+      """
+      Finds the cluster ID to which an experience belongs (if any).
+
+      Args:
+          experience: A dictionary representing the experience.
+
+      Returns:
+          The cluster ID (int) or None if the experience doesn't belong to any cluster.
+      """
+      goal_context_embedding = torch.cat([experience['goal'], experience['context']], dim=-1).cpu().detach().numpy()
+
+      if self.episodic_memory.cluster_method == 'hdbscan':
+          cluster_id = hdbscan.prediction.approximate_predict(self.episodic_memory.clusterer, [goal_context_embedding])[0][0]
+          return cluster_id if cluster_id != -1 else None
+      elif self.episodic_memory.cluster_method == 'som':
+          bmu = self.episodic_memory.som.winner(goal_context_embedding)
+          cluster_id = str(bmu)
+          return cluster_id if cluster_id in self.episodic_memory.clusters else None
+      else:  # Assuming kmeans
+          min_dist = float('inf')
+          closest_cluster_id = None
+          for cluster_id, cluster_data in self.episodic_memory.clusters.items():
+              dist = torch.norm(torch.tensor(goal_context_embedding) - cluster_data['centroid'])
+              if dist < min_dist:
+                  min_dist = dist
+                  closest_cluster_id = cluster_id
+          return closest_cluster_id
+
+    def calculate_surprise(self, experience: Dict) -> float:
+        """
+        Calculates a surprise score for an experience based on prediction error and learning progress.
+
+        Args:
+            experience: A dictionary representing the experience.
+
+        Returns:
+            The surprise score (float).
+        """
+
+        # 1. Prediction Error (example: using a simple difference between expected and actual reward)
+        if 'expected_reward' in experience and 'final_reward' in experience:
+            prediction_error = abs(experience['expected_reward'] - experience['final_reward'])
+        else:
+            prediction_error = 0.0
+
+        # 2. Learning Progress (example: based on how much the model's parameters changed after the experience)
+        # This requires tracking parameter changes during training, which might be complex to implement directly here.
+        # As a placeholder, you could use a proxy like the number of times the experience has been used for training.
+        learning_progress = experience.get('training_count', 0.0)  # You'll need to update this count during training
+
+        # Normalize the factors (you might need to adjust the normalization based on your specific task)
+        normalized_prediction_error = prediction_error / (prediction_error + 1.0)  # Simple normalization to [0, 1]
+        normalized_learning_progress = math.log(1 + learning_progress)
+
+        # Combine factors using weighted averaging
+        surprise_score = (
+            self.prediction_error_factor * normalized_prediction_error +
+            self.learning_progress_factor * normalized_learning_progress
+        )
+
+        return surprise_score
+    
+    def store_experience(self, experience: Dict):
+      """Stores an experience in the episodic memory, along with an importance score."""
+      context_embedding = experience['context']  # Assuming you have a way to get this
+
+      # Calculate importance
+      importance_score = self.calculate_importance(experience, context_embedding)
+
+      # Add importance to the experience dictionary
+      experience['importance'] = importance_score
+
+      self.episodic_memory.push(experience)
 
         def get_activation(name):
             def hook(model, input, output):
@@ -2702,7 +3003,26 @@ def generate_user_profile(self, interaction_history: List[Dict], goal_embedding:
             tactile_data: Optional[torch.Tensor] = None,
             audio_data: Optional[torch.Tensor] = None,
             moral_principles: Optional[List[str]] = None,
+            src: torch.Tensor,
+            src_mask: Optional[torch.Tensor] = None,
+            src_key_padding_mask: Optional[torch.Tensor] = None,
+            memory_states: Optional[torch.Tensor] = None,
+            correct_mask: Optional[torch.Tensor] = None
             user_profile: Optional[Dict] = None) -> Dict[str, torch.Tensor]:
+             ) -> torch.Tensor:
+        """
+        Forward pass of the ByteLatentTransformer.
+
+        Args:
+            src: Input sequence (batch_size, seq_len)
+            src_mask: Mask for the source sequence (optional)
+            src_key_padding_mask: Padding mask for the source sequence (optional)
+            memory_states: Latent memory states from previous interactions (optional)
+
+        Returns:
+            Output logits over the vocabulary (batch_size, seq_len, vocab_size)
+        """
+
         """Forward pass implementing BLT workflow with RNN processing, brain region integration, and SELFGOAL"""
         # Initialize SELFGOAL for this forward pass if not already initialized
         if not hasattr(self, 'current_goal'):
@@ -2720,7 +3040,491 @@ def generate_user_profile(self, interaction_history: List[Dict], goal_embedding:
         
         # Select relevant subgoals using SELFGOAL
         selected_goals = self.goal_manager.select_goals(context)
+
+          # 1. Embed the input tokens
+        src_embed = self.embedding(src) * math.sqrt(self.d_model)  # (batch_size, seq_len, d_model)
+
+        # 2. Encode the input sequence
+        encoder_output = self.encoder(
+            src_embed,
+            mask=src_mask,
+            src_key_padding_mask=src_key_padding_mask
+        )  # (batch_size, seq_len, d_model)
+
+        # 3. Optionally incorporate memory states from short term memory
+        if memory_states is not None:
+            # Combine encoder output with memory states (e.g., concatenation or attention)
+            # This is a placeholder for a more sophisticated memory integration mechanism
+            encoder_output = torch.cat([encoder_output, memory_states.unsqueeze(1)], dim=1)
+
+        # 4. Optionally retrieve from episodic memory and incorporate
+        if self.use_retrieval and hasattr(self, 'episodic_memory'):
+            # Assuming the last hidden state of the encoder output can represent the context
+            context = encoder_output[:, -1, :]
+
+            # Create a dummy goal for demonstration purposes; adapt as needed
+            dummy_goal = torch.randn_like(context)
+            retrieved_memories = self.retrieve_memories(dummy_goal, context, self.retrieval_k)
+
+            if retrieved_memories:
+                # Filter memories based on importance
+                important_memories = [
+                    m for m in retrieved_memories if m['importance'] > self.importance_threshold_episodic
+                ]
+
+                if important_memories:
+                    # Process retrieved memories using attention or gating
+                    retrieved_embeddings = torch.stack([
+                        torch.cat([m['goal'], m['context']], dim=-1) for m in important_memories
+                    ])  # (retrieval_k, goal_dim + context_dim)
+
+                    if self.memory_integration_method == 'attention':
+                        # Add a query vector for the current context
+                        query = context.unsqueeze(1)  # (batch_size, 1, d_model)
+
+                        # Reshape retrieved_embeddings for attention
+                        retrieved_embeddings = retrieved_embeddings.unsqueeze(0).expand(
+                            context.size(0), -1, -1
+                        )  # (batch_size, retrieval_k, goal_dim + context_dim)
+
+                        # Use multi-head attention to get a weighted combination of memories
+                        attn_output, _ = self.memory_attention(
+                            query, retrieved_embeddings, retrieved_embeddings
+                        )  # (batch_size, 1, d_model)
+
+                        # Combine with the current context
+                        combined_context = attn_output.squeeze(1)  # (batch_size, d_model)
+
+                    elif self.memory_integration_method == 'gating':
+                        # Concatenate context and mean of retrieved memories
+                        mean_retrieved = retrieved_embeddings.mean(dim=0, keepdim=True)  # (1, goal_dim + context_dim)
+                        
+                        # Expand mean_retrieved to match the batch size of context
+                        mean_retrieved = mean_retrieved.expand(context.size(0), -1) # (batch_size, goal_dim + context_dim)
+
+                        gate_input = torch.cat([context, mean_retrieved], dim=-1)  # (batch_size, d_model + goal_dim + context_dim)
+
+                        # Pass through the gating mechanism
+                        gate = self.memory_gate(gate_input)  # (batch_size, d_model)
+
+                        # Combine with the current context using the gate
+                        combined_context = gate * context + (1 - gate) * mean_retrieved[:, :self.d_model]  # Assuming goal_dim + context_dim includes d_model
+
+                else:
+                    combined_context = context
+            else:
+                combined_context = context
+        else:
+            combined_context = encoder_output[:, -1, :]
+
+        # 5. Update memory pool (for subsequent interactions)
+        self.memory_pool.update(
+            new_states=encoder_output,
+            k=10,  # You can adjust k as needed
+            update_params=True,  # Only update if needed
+            correct_mask=correct_mask  # Pass in feedback signal
+        )
+
+        # 6. Generate output logits
+        output = self.fc_out(combined_context)  # (batch_size, vocab_size)
+
+        # Update consolidation step count and trigger if needed
+        self.consolidation_step_count += 1
+        if self.consolidation_step_count >= self.consolidation_interval:
+            self.consolidate_memories()
+            self.consolidation_step_count = 0
+
+        return output
+
+    def start_consolidation_thread(self):
+        """Starts the background consolidation thread."""
+        if self.consolidation_thread is None or not self.consolidation_thread.is_alive():
+            self.stop_consolidation_thread = False
+            self.consolidation_thread = threading.Thread(target=self.background_consolidation)
+            self.consolidation_thread.daemon = True
+            self.consolidation_thread.start()
+
+    def stop_consolidation_thread(self):
+        """Stops the background consolidation thread."""
+        self.stop_consolidation_thread = True
+        if self.consolidation_thread is not None and self.consolidation_thread.is_alive():
+            self.consolidation_thread.join()
+
+    def background_consolidation(self):
+        """Performs memory consolidation in the background."""
+        while not self.stop_consolidation_thread:
+            # You can adjust the sleep time as needed
+            time.sleep(self.consolidation_interval)
+            if not self.stop_consolidation_thread:
+                self.consolidate_memories()
+
+    def adaptive_consolidation_interval(self):
+        """
+        Adjusts the consolidation interval based on factors like:
+        - Memory usage
+        - Performance metrics (e.g., loss, accuracy)
+        - Other relevant factors (e.g., stage of training)
+        """
+
+        # Example: Adjust based on memory pool usage and performance
+        memory_stats = self.memory_pool.get_stats()
+        current_usage = memory_stats['current_size'] / memory_stats['pool_size']
         
+        # Example performance metric (e.g., get training loss from a global variable or callback)
+        # Replace this with your actual performance tracking mechanism
+        try:
+          current_performance = self.get_latest_training_loss() # Assume you have a method to track this
+        except:
+          current_performance = 0.1 # Provide a default or fallback value
+
+        # If memory usage is high and performance is poor, reduce the interval (more frequent consolidation)
+        if current_usage > 0.8 and current_performance > 0.2: # Example thresholds
+            self.consolidation_interval = max(
+                self.min_consolidation_interval,
+                int(self.consolidation_interval * (1 - self.consolidation_adaptation_rate))
+            )
+        # If memory usage is low and performance is good, increase the interval (less frequent consolidation)
+        elif current_usage < 0.5 and current_performance < 0.1: # Example thresholds
+            self.consolidation_interval = min(
+                self.max_consolidation_interval,
+                int(self.consolidation_interval * (1 + self.consolidation_adaptation_rate))
+            )
+        
+        # Add other factors and adjustments as needed
+
+        print(f"Consolidation interval updated to: {self.consolidation_interval}")
+
+    def transfer_from_episodic_memory(self):
+      """
+      Transfers relevant experiences from episodic memory to the memory pool based on
+      similarity to current memory pool states.
+      """
+      if not self.episodic_memory:
+          return
+
+      num_to_transfer = int(len(self.episodic_memory) * self.episodic_transfer_rate)
+      if num_to_transfer == 0:
+        return
+
+      # Get a representative sample of embeddings from the memory pool
+      memory_pool_samples = self.memory_pool.get_states()
+
+      # Get a set of candidate experiences from episodic memory for transfer consideration
+      candidate_experiences = self.episodic_memory.get_k_nearest_memories(
+          query_embedding=memory_pool_samples.mean(dim=0),  # Use mean of memory pool samples as query
+          k=num_to_transfer
+      )
+
+      experiences_to_transfer = []
+      for experience in candidate_experiences:
+          # Compute similarity between the experience embedding and memory pool samples
+          experience_embedding = torch.cat([experience['goal'], experience['context']], dim=-1)
+
+          similarity_scores = F.cosine_similarity(
+              experience_embedding.unsqueeze(0),
+              memory_pool_samples,
+              dim=1
+          )
+          max_similarity = similarity_scores.max().item()
+
+          # Transfer if similarity is above threshold and importance is high enough
+          if max_similarity > self.transfer_similarity_threshold and experience['importance'] > self.importance_threshold_episodic:
+              experiences_to_transfer.append(experience)
+
+      # Update the memory pool with transferred experiences
+      for experience in experiences_to_transfer:
+          self.update_memory_pool_from_episodic(experience)
+
+    def update_memory_pool_from_episodic(self, experience: Dict):
+        """
+        Updates the memory pool with an experience from episodic memory.
+
+        Args:
+            experience: A dictionary representing the experience from episodic memory.
+                        Must have keys 'goal' and 'context' with corresponding tensor values.
+        """
+
+        # Convert experience to a suitable format for the memory pool
+        # (This is highly dependent on your specific use case)
+        # For example, you might use the concatenated goal and context as the state:
+        episodic_state = torch.cat([experience['goal'], experience['context']], dim=-1)
+
+        # 1. Find a similar state in the memory pool (if any)
+        memory_states = self.memory_pool.get_states()
+        similarity_scores = F.cosine_similarity(episodic_state.unsqueeze(0), memory_states, dim=1)
+        most_similar_index = similarity_scores.argmax().item()
+        max_similarity = similarity_scores[most_similar_index].item()
+
+        # 2. Decide whether to replace the similar state or add a new one
+        if max_similarity > self.transfer_similarity_threshold:
+            # Replace the similar state if the new state has higher importance (or other criteria)
+            # Example: Update importance based on episodic memory (you'll need a mechanism to assign importance in episodic memory)
+            episodic_importance = experience.get('importance', 1.0)  # Get importance from episodic memory or default to 1.0
+
+            current_importance = self.memory_pool.state_importance[most_similar_index].item()
+
+            # Update importance with a weighted average (or other combination)
+            updated_importance = (1 - self.importance_update_factor) * current_importance + self.importance_update_factor * episodic_importance
+
+            if updated_importance > current_importance:
+              self.memory_pool.memory_states[most_similar_index] = episodic_state
+              self.memory_pool.state_importance[most_similar_index] = updated_importance
+              # Update other relevant attributes (e.g., age, access count) if needed
+              self.memory_pool.memory_age[most_similar_index] = 0  # Reset age for transferred state
+        else:
+            # Add as a new state if below capacity, otherwise, it might replace a low-importance state based on memory_pool's logic
+            self.memory_pool.update(new_states=episodic_state.unsqueeze(0), k=1)
+
+    def consolidate_memories(self):
+        """
+        Performs offline memory consolidation.
+        This can include:
+        - Re-clustering experiences in episodic memory.
+        - Transferring consolidated experiences from episodic memory to the memory pool.
+        - Adaptively adjusting the consolidation interval.
+        - Other optimization or compression operations on the memory.
+        """
+        print("Consolidating memories...")
+
+        # Re-cluster experiences in episodic memory
+        self.episodic_memory.perform_cluster_maintenance()
+
+        # Transfer relevant experiences from episodic memory to memory pool
+        self.transfer_from_episodic_memory()
+
+        # Adaptively adjust the consolidation interval
+        self.adaptive_consolidation_interval()
+
+        print("Memory consolidation complete.")
+
+            # Create a dummy goal for demonstration purposes; adapt as needed
+            dummy_goal = torch.randn_like(context)
+            retrieved_memories = self.retrieve_memories(dummy_goal, context, self.retrieval_k)
+
+            if retrieved_memories:
+                # Process retrieved memories using attention or gating
+                retrieved_embeddings = torch.stack([
+                    torch.cat([m['goal'], m['context']], dim=-1) for m in retrieved_memories
+                ])  # (retrieval_k, goal_dim + context_dim)
+
+                if self.memory_integration_method == 'attention':
+                    # Add a query vector for the current context
+                    query = context.unsqueeze(1)  # (batch_size, 1, d_model)
+
+                    # Reshape retrieved_embeddings for attention
+                    retrieved_embeddings = retrieved_embeddings.unsqueeze(0).expand(
+                        context.size(0), -1, -1
+                    )  # (batch_size, retrieval_k, goal_dim + context_dim)
+
+                    # Use multi-head attention to get a weighted combination of memories
+                    attn_output, _ = self.memory_attention(
+                        query, retrieved_embeddings, retrieved_embeddings
+                    )  # (batch_size, 1, d_model)
+
+                    # Combine with the current context
+                    combined_context = attn_output.squeeze(1)  # (batch_size, d_model)
+
+                elif self.memory_integration_method == 'gating':
+                    # Concatenate context and mean of retrieved memories
+                    mean_retrieved = retrieved_embeddings.mean(dim=0, keepdim=True)  # (1, goal_dim + context_dim)
+                    
+                    # Expand mean_retrieved to match the batch size of context
+                    mean_retrieved = mean_retrieved.expand(context.size(0), -1) # (batch_size, goal_dim + context_dim)
+
+                    gate_input = torch.cat([context, mean_retrieved], dim=-1)  # (batch_size, d_model + goal_dim + context_dim)
+
+                    # Pass through the gating mechanism
+                    gate = self.memory_gate(gate_input)  # (batch_size, d_model)
+
+                    # Combine with the current context using the gate
+                    combined_context = gate * context + (1 - gate) * mean_retrieved[:, :self.d_model]  # Assuming goal_dim + context_dim includes d_model
+
+            else:
+                combined_context = context
+        else:
+            combined_context = encoder_output[:, -1, :]
+
+        # 5. Update memory pool (for subsequent interactions)
+        self.memory_pool.update(
+            new_states=encoder_output,
+            k=10,  # You can adjust k as needed
+            update_params=True,  # Only update if needed
+            correct_mask=correct_mask  # Pass in feedback signal
+        )
+
+        # 6. Generate output logits
+        output = self.fc_out(combined_context)  # (batch_size, vocab_size)
+
+        # Update consolidation step count and trigger if needed
+        self.consolidation_step_count += 1
+        if self.consolidation_step_count >= self.consolidation_interval:
+            self.consolidate_memories()
+            self.consolidation_step_count = 0
+
+        return output
+
+    def start_consolidation_thread(self):
+        """Starts the background consolidation thread."""
+        if self.consolidation_thread is None or not self.consolidation_thread.is_alive():
+            self.stop_consolidation_thread = False
+            self.consolidation_thread = threading.Thread(target=self.background_consolidation)
+            self.consolidation_thread.daemon = True
+            self.consolidation_thread.start()
+
+    def stop_consolidation_thread(self):
+        """Stops the background consolidation thread."""
+        self.stop_consolidation_thread = True
+        if self.consolidation_thread is not None and self.consolidation_thread.is_alive():
+            self.consolidation_thread.join()
+
+    def background_consolidation(self):
+        """Performs memory consolidation in the background."""
+        while not self.stop_consolidation_thread:
+            # You can adjust the sleep time as needed
+            time.sleep(self.consolidation_interval)
+            if not self.stop_consolidation_thread:
+                self.consolidate_memories()
+
+    def adaptive_consolidation_interval(self):
+        """
+        Adjusts the consolidation interval based on factors like:
+        - Memory usage
+        - Performance metrics (e.g., loss, accuracy)
+        - Other relevant factors (e.g., stage of training)
+        """
+
+        # Example: Adjust based on memory pool usage and performance
+        memory_stats = self.memory_pool.get_stats()
+        current_usage = memory_stats['current_size'] / memory_stats['pool_size']
+        
+        # Example performance metric (e.g., get training loss from a global variable or callback)
+        # Replace this with your actual performance tracking mechanism
+        try:
+          current_performance = self.get_latest_training_loss() # Assume you have a method to track this
+        except:
+          current_performance = 0.1 # Provide a default or fallback value
+
+        # If memory usage is high and performance is poor, reduce the interval (more frequent consolidation)
+        if current_usage > 0.8 and current_performance > 0.2: # Example thresholds
+            self.consolidation_interval = max(
+                self.min_consolidation_interval,
+                int(self.consolidation_interval * (1 - self.consolidation_adaptation_rate))
+            )
+        # If memory usage is low and performance is good, increase the interval (less frequent consolidation)
+        elif current_usage < 0.5 and current_performance < 0.1: # Example thresholds
+            self.consolidation_interval = min(
+                self.max_consolidation_interval,
+                int(self.consolidation_interval * (1 + self.consolidation_adaptation_rate))
+            )
+        
+        # Add other factors and adjustments as needed
+
+        print(f"Consolidation interval updated to: {self.consolidation_interval}")
+
+    def transfer_from_episodic_memory(self):
+      """
+      Transfers relevant experiences from episodic memory to the memory pool based on
+      similarity to current memory pool states.
+      """
+      if not self.episodic_memory:
+          return
+
+      num_to_transfer = int(len(self.episodic_memory) * self.episodic_transfer_rate)
+      if num_to_transfer == 0:
+        return
+
+      # Get a representative sample of embeddings from the memory pool
+      memory_pool_samples = self.memory_pool.get_states()
+
+      # Get a set of candidate experiences from episodic memory for transfer consideration
+      candidate_experiences = self.episodic_memory.get_k_nearest_memories(
+          query_embedding=memory_pool_samples.mean(dim=0),  # Use mean of memory pool samples as query
+          k=num_to_transfer
+      )
+
+      experiences_to_transfer = []
+      for experience in candidate_experiences:
+          # Compute similarity between the experience embedding and memory pool samples
+          experience_embedding = torch.cat([experience['goal'], experience['context']], dim=-1)
+
+          similarity_scores = F.cosine_similarity(
+              experience_embedding.unsqueeze(0),
+              memory_pool_samples,
+              dim=1
+          )
+          max_similarity = similarity_scores.max().item()
+
+          # Transfer if similarity is above threshold
+          if max_similarity > self.transfer_similarity_threshold:
+              experiences_to_transfer.append(experience)
+
+      # Update the memory pool with transferred experiences
+      for experience in experiences_to_transfer:
+          self.update_memory_pool_from_episodic(experience)
+
+    def update_memory_pool_from_episodic(self, experience: Dict):
+        """
+        Updates the memory pool with an experience from episodic memory.
+
+        Args:
+            experience: A dictionary representing the experience from episodic memory.
+                        Must have keys 'goal' and 'context' with corresponding tensor values.
+        """
+
+        # Convert experience to a suitable format for the memory pool
+        # (This is highly dependent on your specific use case)
+        # For example, you might use the concatenated goal and context as the state:
+        episodic_state = torch.cat([experience['goal'], experience['context']], dim=-1)
+
+        # 1. Find a similar state in the memory pool (if any)
+        memory_states = self.memory_pool.get_states()
+        similarity_scores = F.cosine_similarity(episodic_state.unsqueeze(0), memory_states, dim=1)
+        most_similar_index = similarity_scores.argmax().item()
+        max_similarity = similarity_scores[most_similar_index].item()
+
+        # 2. Decide whether to replace the similar state or add a new one
+        if max_similarity > self.transfer_similarity_threshold:
+            # Replace the similar state if the new state has higher importance (or other criteria)
+            # Example: Update importance based on episodic memory (you'll need a mechanism to assign importance in episodic memory)
+            episodic_importance = experience.get('importance', 1.0)  # Get importance from episodic memory or default to 1.0
+
+            current_importance = self.memory_pool.state_importance[most_similar_index].item()
+
+            # Update importance with a weighted average (or other combination)
+            updated_importance = (1 - self.importance_update_factor) * current_importance + self.importance_update_factor * episodic_importance
+
+            if updated_importance > current_importance:
+              self.memory_pool.memory_states[most_similar_index] = episodic_state
+              self.memory_pool.state_importance[most_similar_index] = updated_importance
+              # Update other relevant attributes (e.g., age, access count) if needed
+              self.memory_pool.memory_age[most_similar_index] = 0  # Reset age for transferred state
+        else:
+            # Add as a new state if below capacity, otherwise, it might replace a low-importance state based on memory_pool's logic
+            self.memory_pool.update(new_states=episodic_state.unsqueeze(0), k=1)
+
+    def consolidate_memories(self):
+        """
+        Performs offline memory consolidation.
+        This can include:
+        - Re-clustering experiences in episodic memory.
+        - Transferring consolidated experiences from episodic memory to the memory pool.
+        - Adaptively adjusting the consolidation interval.
+        - Other optimization or compression operations on the memory.
+        """
+        print("Consolidating memories...")
+
+        # Re-cluster experiences in episodic memory
+        self.episodic_memory.perform_cluster_maintenance()
+
+        # Transfer relevant experiences from episodic memory to memory pool
+        self.transfer_from_episodic_memory()
+
+        # Adaptively adjust the consolidation interval
+        self.adaptive_consolidation_interval()
+
+        print("Memory consolidation complete.")
+    
+
         # Track reasoning steps for CoT reward
         reasoning_steps = []
         confidence_scores = []
