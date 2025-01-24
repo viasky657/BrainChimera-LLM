@@ -653,6 +653,51 @@ def get_region_activations(activation_dict, region_mapping):
                 region_activations[region].append(activation_dict[layer_name])
     return region_activations
 
+class SVF: #This is the SVF dynamic self-configuration of the model depending on the task. The datasets must be labeled for each task so the model can self-adapt: programming, math, mootor, language-understanding, visual, smell, tactile, 
+    def __init__(self, model, tasks, rank=32, alpha=0.5, device="cpu"):
+        self.model = model
+        self.tasks = tasks
+        self.rank = rank
+        self.alpha = alpha
+        self.z_vectors = {task: torch.randn(self.model.config.hidden_size, self.rank, requires_grad=True, device=device) for task in self.tasks}
+        self.device = device
+        self.init_z_vectors()
+
+    def init_z_vectors(self):
+        for task in self.tasks:
+            self.z_vectors[task] = torch.randn(self.model.config.hidden_size, self.rank, requires_grad=True, device=self.device)
+            # Ensure z-vector elements are within a reasonable range (e.g., [0, 1] or [-1, 1]) using sigmoid or tanh
+            # Option 1: Sigmoid for [0, 1] range
+            # self.z_vectors[task] = torch.sigmoid(self.z_vectors[task]) 
+            # Option 2: Tanh for [-1, 1] range
+            # self.z_vectors[task] = torch.tanh(self.z_vectors[task])
+
+    def apply_z_vector(self, task):
+        """Applies the task-specific z-vector to the model's weights."""
+        z_vector = self.z_vectors[task]
+
+        with torch.no_grad():
+            for name, param in self.model.named_parameters():
+                if 'weight' in name:  # Apply only to weight matrices
+                    # Decompose the weight matrix using SVD
+                    U, S, V = torch.linalg.svd(param)
+                    # Truncate to the specified rank
+                    U = U[:, :self.rank]
+                    S = S[:self.rank]
+                    V = V[:self.rank, :]
+
+                    # Modulate singular values based on z-vector
+                    # (Consider different ways to combine z-vector and singular values)
+                    S_modulated = S * z_vector.mean(dim=0)  # Example: Element-wise multiplication (average z-vector across hidden size)
+                    # S_modulated = S + self.alpha * z_vector.mean(dim=0) # Example: Additive modulation
+
+                    # Reconstruct the weight matrix
+                    param.data = U @ torch.diag(S_modulated) @ V
+
+    def parameters(self):
+        """Returns the z-vectors as the parameters to be optimized."""
+        return list(self.z_vectors.values())
+          
 #Dataset fMRI Preparation. 
 class fMRIDataset(Dataset):
     def __init__(self, data_dir: str, config: TrainingConfig, image_transform=None):
@@ -5031,10 +5076,22 @@ class MultimodalBrainAwareDataset(Dataset):
     def __getitem__(self, idx):
         # Get raw data
         text = self.text_data[idx]
+        task = row['task'] #Added for SDV Dataset Labeling for self-configuration at runtime. 
+        input_text = row['input']
+        target_text = row['target']
 
+        inputs = self.tokenizer(input_text, return_tensors="pt", padding="max_length", truncation=True, max_length=self.max_length)
+        targets = self.tokenizer(target_text, return_tensors="pt", padding="max_length", truncation=True, max_length=self.max_length)
         # Add system prompt to tokens and token_embeds
         tokens['system_prompt'] = self.tokenizer.tokenize(self.system_prompt)
         token_embeds['system_prompt'] = self.tokenizer.embed(tokens['system_prompt'])
+
+            return {
+            "task": task,
+            "input_ids": inputs.input_ids.squeeze(0),
+            "attention_mask": inputs.attention_mask.squeeze(0),
+            "target": targets.input_ids.squeeze(0) # Or any other representation of the target
+        }
 
         
         # Process fMRI data if available
