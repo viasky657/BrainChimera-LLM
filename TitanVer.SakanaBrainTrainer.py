@@ -653,7 +653,7 @@ def get_region_activations(activation_dict, region_mapping):
                 region_activations[region].append(activation_dict[layer_name])
     return region_activations
 
-class SVF: #This is the SVF dynamic self-configuration of the model depending on the task. The datasets must be labeled for each task so the model can self-adapt: programming, math, mootor, language-understanding, visual, smell, tactile, 
+class SVF: #This is the SVF dynamic self-configuration of the model depending on the task. The datasets must be labeled for each task so the model can self-adapt: "math", "language_understanding", "code", "visual", "smell", "tactile", "motor"
     def __init__(self, model, tasks, rank=32, alpha=0.5, device="cpu"):
         self.model = model
         self.tasks = tasks
@@ -8243,3 +8243,34 @@ def load_fmri_data(data_dir: Path, smooth_kernel: int = 3, min_activity: float =
 
 if __name__ == "__main__":
     main()
+
+''' #The below is needed for training the self-configuration (SVF) of the model depending on the task that the user asks the model to perform from the visual to the language_understanding tasks. This will need to be
+    #properly added to the above program to work properly with the rest of the program. 
+    # Model and tokenizer initialization
+    model_name = "this model being trained"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+
+    # Tasks and SVF initialization
+    tasks = ["math", "language_understanding", "code", "visual", "smell", "tactile", "motor"]  # Define your tasks
+    svf = SVF(model, tasks, rank=32, alpha=0.5, device="cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Dataset
+    data_filepath = "your_task_dataset.csv"  # Replace with your dataset file
+    dataset = TaskDataset(data_filepath, tokenizer)
+
+    # Train z-vectors
+    train_z_vectors(
+        model,
+        svf,
+        dataset,
+        tokenizer,
+        num_episodes=100,
+        batch_size=4,
+        learning_rate=1e-4,
+        gamma=0.99,
+        clip_ratio=0.2
+    )
+'''
+                  
