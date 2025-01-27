@@ -145,6 +145,7 @@ class HierarchicalMemory:
                     merged[i] = True
                     merged[j] = True
                     break  # Exit the inner loop after a merge (to avoid issues with indices)
+
 class NeuralMemory(nn.Module):
     def __init__(self, input_size, memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta):
         super().__init__()
