@@ -69,12 +69,82 @@ class HierarchicalMemory:
                 else:
                     return current_node, surprise_node
 
+   
     def merge_nodes(self, node1, node2):
-        # ... (Implementation for merging two nodes) ...
+        """
+        Merges two memory nodes into a single new node.
 
+        Args:
+            node1: The first MemoryNode to merge.
+            node2: The second MemoryNode to merge.
+
+        Returns:
+            The new merged MemoryNode.
+        """
+        # 1. Create a new memory chunk by averaging the memory chunks of the two nodes:
+        #    - You might want to weight the average by the number of memories in each chunk
+        #      (if you are tracking that) or by the inverse of their timestamps (giving more
+        #      weight to more recent memories).
+        #    - If you don't have a count, a simple average is a good starting point.
+
+        # Assuming you have a way to get the number of memories represented by each node:
+        num_memories1 = node1.get_num_memories() # Replace with your actual method
+        num_memories2 = node2.get_num_memories()
+        total_memories = num_memories1 + num_memories2
+
+        new_memory_chunk = (node1.memory_chunk * num_memories1 + node2.memory_chunk * num_memories2) / total_memories
+
+        # 2. Set the timestamp of the new node to the average of the two timestamps (consider weighting).
+        new_timestamp = (node1.timestamp * num_memories1 + node2.timestamp * num_memories2) / total_memories
+
+        # 3. Set the centroid of the new node to the average of the two centroids (consider weighting).
+        new_centroid = (node1.centroid * num_memories1 + node2.centroid * num_memories2) / total_memories
+
+        # 4. Create the new merged node.
+        new_node = MemoryNode(new_memory_chunk, new_timestamp, new_centroid)
+
+        # 5. Make the children of the two merged nodes the children of the new node.
+        new_node.children = node1.children + node2.children
+
+        return new_node
+   
     def merge_similar_nodes(self, similarity_threshold):
-        # ... (Implementation for recursively merging nodes) ...
+        """
+        Recursively merges similar nodes in the memory hierarchy.
+        """
+        self._merge_similar_nodes_recursive(self.root, similarity_threshold)
 
+    def _merge_similar_nodes_recursive(self, node, similarity_threshold):
+        if not node.children:
+            return
+
+        # 1. Recursively merge similar nodes in the children
+        for child in node.children:
+            self._merge_similar_nodes_recursive(child, similarity_threshold)
+
+        # 2. Compare children of the current node
+        merged = [False] * len(node.children)  # Keep track of which children have been merged
+        for i in range(len(node.children)):
+            if merged[i]:
+                continue  # Skip if already merged in this pass
+            for j in range(i + 1, len(node.children)):
+                if merged[j]:
+                    continue  # Skip if already merged in this pass
+                
+                similarity = torch.dot(node.children[i].centroid, node.children[j].centroid)  # Calculate similarity
+                if similarity >= similarity_threshold:
+                    # Merge nodes i and j
+                    new_node = self.merge_nodes(node.children[i], node.children[j])
+
+                    # Replace the merged nodes in the children list with the new node
+                    new_children = [child for k, child in enumerate(node.children) if k != i and k != j]
+                    new_children.append(new_node)
+                    node.children = new_children
+
+                    # Mark nodes i and j as merged
+                    merged[i] = True
+                    merged[j] = True
+                    break  # Exit the inner loop after a merge (to avoid issues with indices)
 class NeuralMemory(nn.Module):
     def __init__(self, input_size, memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta):
         super().__init__()
