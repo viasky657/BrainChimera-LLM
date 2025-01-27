@@ -1,1 +1,111 @@
+import torch
+import torch.nn as nn
+import time
 
+class MemoryNode:
+    def __init__(self, memory_chunk_size, timestamp, centroid=None):
+        self.memory_chunk = torch.zeros(memory_chunk_size)  # Example initialization
+        self.timestamp = timestamp
+        self.centroid = centroid if centroid is not None else torch.zeros(memory_chunk_size[0])
+        self.children = []
+
+class HierarchicalMemory:
+    def __init__(self, root_memory_chunk_size):
+        self.root = MemoryNode(root_memory_chunk_size, time.time())
+      
+    def traverse(self, key, similarity_threshold, create_threshold):
+        """
+        Traverses the hierarchical memory to find the most relevant node for a given key.
+
+        Args:
+            key: The input key (a PyTorch tensor).
+            similarity_threshold: The minimum similarity required to consider a node relevant.
+            create_threshold: The minimum similarity required to create a new child node.
+
+        Returns:
+            A tuple: (current_node, surprise_node) 
+                - current_node: The MemoryNode that is most relevant to the key.
+                - surprise_node: The corresponding node in the surprise hierarchy.
+        """
+        current_node = self.root
+        surprise_node = self.surprise_root  # Assuming a parallel surprise hierarchy
+
+        while True:
+            if not current_node.children:  # If the current node is a leaf node
+                if torch.dot(key, current_node.centroid) < create_threshold:
+                    # Create a new child node
+                    new_child = MemoryNode(current_node.memory_chunk.shape, time.time(), centroid=key)
+                    new_surprise_child = MemoryNode(current_node.memory_chunk.shape, time.time())  # Assuming you initialize surprise with zeros
+                    current_node.children.append(new_child)
+                    surprise_node.children.append(new_surprise_child)
+                    return new_child, new_surprise_child
+                else:
+                    return current_node, surprise_node
+
+            # Find the most similar child
+            most_similar_child = None
+            most_similar_surprise_child = None
+            highest_similarity = -float('inf')
+
+            for i, child in enumerate(current_node.children):
+                similarity = torch.dot(key, child.centroid)  # Cosine similarity
+                if similarity > highest_similarity:
+                    highest_similarity = similarity
+                    most_similar_child = child
+                    most_similar_surprise_child = surprise_node.children[i]
+
+            # Decide whether to move to a child or stay at the current node
+            if highest_similarity >= similarity_threshold:
+                current_node = most_similar_child
+                surprise_node = most_similar_surprise_child
+            else:
+                if torch.dot(key, current_node.centroid) < create_threshold:
+                    # Create a new child node under the current node
+                    new_child = MemoryNode(current_node.memory_chunk.shape, time.time(), centroid=key)
+                    new_surprise_child = MemoryNode(current_node.memory_chunk.shape, time.time())
+                    current_node.children.append(new_child)
+                    surprise_node.children.append(new_surprise_child)
+                    return new_child, new_surprise_child
+                else:
+                    return current_node, surprise_node
+
+    def merge_nodes(self, node1, node2):
+        # ... (Implementation for merging two nodes) ...
+
+    def merge_similar_nodes(self, similarity_threshold):
+        # ... (Implementation for recursively merging nodes) ...
+
+class NeuralMemory(nn.Module):
+    def __init__(self, input_size, memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta):
+        super().__init__()
+        # ... (Define W_K, W_V, W_O, memory, etc.) ...
+        self.memory = HierarchicalMemory(memory_size)
+        self.forgetting_list = forgetting_list
+        self.beta = beta
+        self.similarity_threshold = similarity_threshold
+        self.create_threshold = create_threshold
+        self.alpha = alpha
+        self.eta = eta
+        self.theta = theta
+
+    def forward(self, x_t, memory_state):
+        # ... (Implementation of the enhanced NeuralMemory algorithm) ...
+        memory_output, updated_memory_state, updated_surprise_state = self.neural_memory(x_t, memory_state, surprise_state)
+        # ... (key, value projection) ...
+        current_memory_node, current_surprise_node = self.memory.traverse(key, self.similarity_threshold, self.create_threshold)
+        # current_memory_node now holds the relevant memory chunk
+        # current_surprise_node now holds the corresponding surprise chunk
+
+        # ... (Use current_memory_node.memory_chunk for surprise calculation and memory retrieval) ...
+        # ... (Update current_memory_node.memory_chunk and current_surprise_node.memory_chunk) ...
+        # ... (Update centroid, timestamp, etc.) ...
+
+class MAG(nn.Module):
+    def __init__(self, input_size, memory_size, persistent_memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta):
+        super().__init__()
+        # ... (Define SWA, NeuralMemory, gating mechanism, etc.) ...
+        self.neural_memory = NeuralMemory(input_size, memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta)
+        self.persistent_memory = nn.Parameter(torch.randn(persistent_memory_size))
+
+    def forward(self, x):
+        # ... (Implementation of the MAG algorithm with hierarchical memory) ...
