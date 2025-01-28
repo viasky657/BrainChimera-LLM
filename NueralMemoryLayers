@@ -5,13 +5,16 @@ import pickle
 from collections import OrderedDict
 import uuid
 
+
 class MemoryNode:
-    def __init__(self, memory_chunk, timestamp, centroid=None):
-        self.id = uuid.uuid4()  # Generate a unique ID
+    def __init__(self, memory_chunk, timestamp, centroid=None, surprise_chunk=None):
+        self.id = uuid.uuid4()
         self.memory_chunk = memory_chunk
         self.timestamp = timestamp
         self.centroid = centroid
         self.children = []
+        self.last_accessed = time.time()
+        self.surprise_chunk = surprise_chunk  # Add surprise_chunk
 
     def get_num_memories(self):
         if not self.children:
@@ -47,7 +50,7 @@ class HierarchicalMemory:
         self.num_layers = num_layers  # Number of memory layers is now a parameter
         self.root_memory_chunk_size = root_memory_chunk_size
         self.cache_capacity = cache_capacity
-        self.active_layer = 0  # Index of the currently active layer
+        self.active_layer = 0
 
         # Create memory layers dynamically
         self.memory_layers = [self._create_memory_layer() for _ in range(self.num_layers)]
@@ -58,6 +61,67 @@ class HierarchicalMemory:
     def _create_memory_layer(self):
         """Creates a new memory layer with a root node."""
         return MemoryNode(self.root_memory_chunk_size, time.time())
+
+ def check_cross_layer_similarity(self, similarity_threshold, time_threshold, decay_factor=0.5):
+        """
+        Checks for similar memories across layers and decays or removes them based on
+        similarity and time thresholds.
+
+        Args:
+            similarity_threshold: The minimum similarity score to consider memories similar.
+            time_threshold: The maximum time difference (in seconds) to consider memories nearly the same.
+            decay_factor: The factor by which to decay the memory chunks of similar memories (0.0 means remove).
+        """
+        for i in range(self.num_layers):
+            for j in range(i + 1, self.num_layers):
+                print(f"Checking similarity between layers {i} and {j}")
+                self._compare_layers(
+                    self.memory_layers[i],
+                    self.surprise_layers[i],
+                    self.memory_layers[j],
+                    self.surprise_layers[j],
+                    similarity_threshold,
+                    time_threshold,
+                    decay_factor
+                )
+
+    def _compare_layers(self, layer1_root, surprise_layer1_root, layer2_root, surprise_layer2_root, similarity_threshold, time_threshold, decay_factor):
+        """
+        Compares nodes between two layers and decays or removes similar memories based on thresholds.
+        """
+        for node1 in self._traverse_layer(layer1_root):
+            for node2 in self._traverse_layer(layer2_root):
+                similarity = torch.dot(node1.centroid, node2.centroid)
+                time_diff = abs(node1.timestamp - node2.timestamp)
+
+                if similarity >= similarity_threshold and time_diff <= time_threshold:
+                    print(f"  Found similar nodes across layers (similarity: {similarity:.2f}, time diff: {time_diff:.2f})")
+
+                    # Decay or remove memory chunks
+                    if decay_factor == 0:
+                        node1.memory_chunk = torch.zeros_like(node1.memory_chunk)
+                        node2.memory_chunk = torch.zeros_like(node2.memory_chunk)
+                        # Also decay corresponding surprise nodes (if applicable)
+                        # ...
+                    else:
+                        node1.memory_chunk *= decay_factor
+                        node2.memory_chunk *= decay_factor
+                        # Also decay corresponding surprise nodes (if applicable)
+                        # ...
+
+    def _traverse_layer(self, node):
+        """
+        Traverses all nodes in a layer using depth-first search.
+
+        Args:
+            node: The root node of the layer to traverse.
+
+        Yields:
+            MemoryNode: Each node in the layer.
+        """
+        yield node
+        for child in node.children:
+            yield from self._traverse_layer(child)
 
     def traverse(self, key, similarity_threshold, create_threshold):
         """
@@ -164,7 +228,7 @@ class HierarchicalMemory:
         self._merge_similar_nodes_recursive(self.root, self.surprise_root, similarity_threshold)
         self._similarity_cache = LRUCache(self.cache_capacity)  # Clear the cache (reinitialize)
 
-    def activate_next_layer(self):
+   def activate_next_layer(self):
         """Activates the next memory layer if available."""
         if self.active_layer < self.num_layers - 1:
             self.active_layer += 1
@@ -205,13 +269,18 @@ class HierarchicalMemory:
             count += self._count_non_empty_nodes(child)
         return count
 
-   def merge_similar_nodes(self, similarity_threshold):
+def merge_similar_nodes(self, similarity_threshold):
         """
         Recursively merges similar nodes in the active memory layer.
         """
         active_memory_root = self.memory_layers[self.active_layer]
-        active_surprise_root = self.surprise_layers[self.active_layer] #Last change was here. Last left off with adding parameter memory layers. Near the top of the list of changes. 
+        active_surprise_root = self.surprise_layers[self.active_layer]
 
+        self._similarity_cache = LRUCache(self.cache_capacity)  # Initialize LRU cache
+        self._merge_similar_nodes_recursive(active_memory_root, active_surprise_root, similarity_threshold)
+        self._similarity_cache = None  # Clear the cache (reinitialize)
+
+    def _merge_similar_nodes_recursive(self, node, surprise_node, similarity_threshold):
         if not node.children:
             return
 
@@ -235,7 +304,181 @@ class HierarchicalMemory:
                     similarity = torch.dot(node.children[i].centroid, node.children[j].centroid)
                     self._similarity_cache.put(node_pair, similarity)  # Use put() for LRU cache
 
-  
+                if similarity >= similarity_threshold:
+                    # Merge memory nodes
+                    new_node = self.merge_nodes(node.children[i], node.children[j])
+
+                    # Merge corresponding surprise nodes
+                    new_surprise_node = self.merge_surprise_nodes(surprise_node.children[i], surprise_node.children[j])
+
+                    # Replace the merged nodes in the children lists
+                    new_children = [child for k, child in enumerate(node.children) if k != i and k != j]
+                    new_children.append(new_node)
+                    node.children = new_children
+
+                    new_surprise_children = [child for k, child in enumerate(surprise_node.children) if k != i and k != j]
+                    new_surprise_children.append(new_surprise_node)
+                    surprise_node.children = new_surprise_children
+
+                    merged[i] = True
+                    merged[j] = True
+                    break  # Exit the inner loop after a merge (to avoid issues with indices)
+
+def merge_nodes_across_layers(self, node1, layer1_index, node2, layer2_index, similarity_threshold):
+        """
+        Merges two similar nodes from different layers into a single node in the more recent layer.
+
+        Args:
+            node1: The first MemoryNode (from the older layer).
+            layer1_index: The index of the layer to which node1 belongs.
+            node2: The second MemoryNode (from the more recent layer).
+            layer2_index: The index of the layer to which node2 belongs.
+            similarity_threshold: The minimum similarity required for merging.
+        """
+
+        # 1. Ensure node2 is in the more recent layer
+        if layer1_index > layer2_index:
+            node1, node2 = node2, node1
+            layer1_index, layer2_index = layer2_index, layer1_index
+
+        # 2. Calculate weights (favor more recent node)
+        epsilon = 1e-10
+        weight1 = 1 / (node1.timestamp + epsilon)
+        weight2 = 1 / (node2.timestamp + epsilon)
+        total_weight = weight1 + weight2
+        weight1 /= total_weight
+        weight2 /= total_weight
+
+        # 3. Merge node data into node2 (more recent layer)
+        new_memory_chunk = (node1.memory_chunk * weight1 + node2.memory_chunk * weight2)
+        new_timestamp = (node1.timestamp * weight1 + node2.timestamp * weight2)
+        new_centroid = (node1.centroid * weight1 + node2.centroid * weight2)
+
+        # 4. Create new node in more recent layer, or update if it exists
+        merged_node = MemoryNode(new_memory_chunk, new_timestamp, new_centroid)
+        merged_node.children = node2.children # Start with children from more recent node
+
+      # 5. Handle children (recursively merge similar children)
+        for child1 in node1.children:
+            most_similar_child2 = None
+            highest_similarity = -1
+
+            for child2 in node2.children:
+                similarity = torch.dot(child1.centroid, child2.centroid)
+                if similarity >= similarity_threshold and similarity > highest_similarity:
+                    most_similar_child2 = child2
+                    highest_similarity = similarity
+
+            if most_similar_child2 is not None:
+                # Recursively merge child1 with the most similar child2
+                merged_child = self.merge_nodes_across_layers(child1, layer1_index, most_similar_child2, layer2_index, similarity_threshold)
+
+                # Remove the merged child from node2's children (it's now part of merged_node)
+                node2.children.remove(most_similar_child2)
+            else:
+                # Attach child1 to merged_node (no similar child found in node2)
+                merged_node.children.append(child1)
+
+        # 6. Update parent-child relationships (remove node1 from its parent)
+        self._remove_node_from_parent(node1, self.memory_layers[layer1_index])
+
+        # 7. Add merged_node to the more recent layer (if not already present)
+        if merged_node not in self.memory_layers[layer2_index].children:
+            self.memory_layers[layer2_index].children.append(merged_node)
+
+        # 8. Update surprise nodes similarly
+
+        # 9. Prune children of the merged node (optional)
+        self.prune_children(merged_node, layer2_index, pruning_threshold)  # Now resets instead of removing
+        # ...
+
+        return merged_node
+
+def prune_children(self, node, layer_index, threshold):
+        """
+        Prunes children of a node by resetting their memory content instead of removing them.
+
+        Args:
+            node: The node whose children to prune.
+            layer_index: The index of the layer containing the node.
+            threshold: A threshold used to determine relevance (e.g., similarity to the parent).
+        """
+        for child in node.children:
+            similarity = torch.dot(node.centroid, child.centroid)
+            if similarity < threshold:
+                # Reset the child's memory content
+                child.memory_chunk = torch.zeros_like(child.memory_chunk)
+                child.timestamp = time.time()  # Update the timestamp to the current time
+                child.centroid = torch.zeros_like(child.centroid)  # Reset centroid
+
+                # Recursively prune the child's subtree
+                self.prune_children(child, layer_index, threshold)
+
+    def _remove_node_from_parent(self, node, layer_root):
+        """
+        Removes a node from its parent's children list.
+
+        Args:
+            node: The node to remove.
+            layer_root: The root node of the layer.
+        """
+        for parent in self._traverse_layer(layer_root):
+            if node in parent.children:
+                parent.children.remove(node)
+                return
+
+    def _find_node_by_id(self, node_id, layer_root):
+        """
+        Finds a node in a layer by its unique ID.
+
+        Args:
+            node_id: The unique ID of the node to find.
+            layer_root: The root node of the layer to search.
+
+        Returns:
+            The MemoryNode if found, None otherwise.
+        """
+        for node in self._traverse_layer(layer_root):
+            if node.id == node_id:
+                return node
+        return None
+
+def _compare_layers(self, layer1_root, surprise_layer1_root, layer2_root, surprise_layer2_root, similarity_threshold, time_threshold, decay_factor):
+        """
+        Compares nodes between two layers and merges similar memories based on thresholds.
+        """
+        for node1 in self._traverse_layer(layer1_root):
+            for node2 in self._traverse_layer(layer2_root):
+                similarity = torch.dot(node1.centroid, node2.centroid)
+                time_diff = abs(node1.timestamp - node2.timestamp)
+
+                if similarity >= similarity_threshold and time_diff <= time_threshold:
+                    print(f"  Found similar nodes across layers (similarity: {similarity:.2f}, time diff: {time_diff:.2f})")
+
+                    layer1_index = self.memory_layers.index(layer1_root)
+                    layer2_index = self.memory_layers.index(layer2_root)
+
+                    # Merge nodes across layers
+                    merged_node = self.merge_nodes_across_layers(node1, layer1_index, node2, layer2_index, similarity_threshold)
+
+def check_cross_layer_similarity(self, similarity_threshold, time_threshold, decay_factor=0.5):
+        """
+        Checks for similar memories across layers and decays or removes them based on
+        similarity and time thresholds.
+        """
+        for i in range(self.num_layers):
+            for j in range(i + 1, self.num_layers):
+                print(f"Checking similarity between layers {i} and {j}")
+                self._compare_layers(
+                    self.memory_layers[i],
+                    self.surprise_layers[i],
+                    self.memory_layers[j],
+                    self.surprise_layers[j],
+                    similarity_threshold,
+                    time_threshold,
+                    decay_factor  # Now used for merging, not decaying
+                )
+
     def save(self, filepath):
         """Saves the hierarchical memory to a file."""
         # Don't save the cache
@@ -270,6 +513,29 @@ class HierarchicalMemory:
 
         return loaded_memory
 
+ def merge_surprise_nodes(self, node1, node2):
+        """
+        Merges two surprise nodes into a single new node.
+
+        Args:
+            node1: The first MemoryNode (in the surprise hierarchy) to merge.
+            node2: The second MemoryNode (in the surprise hierarchy) to merge.
+
+        Returns:
+            The new merged MemoryNode (for the surprise hierarchy).
+        """
+        # Very similar to merge_nodes, but operates on the surprise memory chunks.
+
+        # 1. Create a new memory chunk by averaging the memory chunks of the two nodes:
+        new_memory_chunk = (node1.memory_chunk + node2.memory_chunk) / 2  # Simple average for surprise
+
+        # 2. Create the new merged node (no timestamp or centroid needed for surprise nodes).
+        new_node = MemoryNode(new_memory_chunk, timestamp=None, centroid=None)  # Assuming surprise nodes don't need these
+
+        # 3. Make the children of the two merged nodes the children of the new node.
+        new_node.children = node1.children + node2.children
+
+        return new_node
 
 class NeuralMemory(nn.Module):
     def __init__(self, input_size, memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta):
@@ -295,8 +561,7 @@ class NeuralMemory(nn.Module):
         # ... (Use current_memory_node.memory_chunk for surprise calculation and memory retrieval) ...
         # ... (Update current_memory_node.memory_chunk and current_surprise_node.memory_chunk) ...
         # ... (Update centroid, timestamp, etc.) ...
-
-       # Create a hierarchical memory with 3 layers
+        # Create a hierarchical memory with 3 layers
         memory = HierarchicalMemory(num_layers=3, root_memory_chunk_size=(100, 50))
 
         # ... (Interact with the memory, add data, etc.) ...
@@ -312,8 +577,13 @@ class NeuralMemory(nn.Module):
 
         # Load the memory later
         loaded_memory = HierarchicalMemory.load("my_multi_layered_memory.pickle")
-        # Save the memory
-        memory.save("my_memory.pickle")
+        # ... (Interact with the memory, add data, etc.) ...
+
+        # Check if the active layer is full (and activate the next layer if needed)
+        if memory.is_layer_full():
+            memory.activate_next_layer()
+
+        # ... (Continue interacting with the memory, merging nodes, etc.) ...
 
         # Load the memory later
         loaded_memory = HierarchicalMemory.load("my_memory.pickle", cache_capacity=5000)
@@ -330,3 +600,19 @@ class MAG(nn.Module):
 
     def forward(self, x):
         # ... (Implementation of the MAG algorithm with hierarchical memory) ...
+
+''' #This contains code that is needed to call the memory module program in the main training loop. This will need to be integrated into the main program. 
+. Integrate into the Main Flow:
+
+Call the check_cross_layer_similarity method after the merge_similar_nodes method in your main training or memory management loop. For example:
+
+# ... (Your training loop, data processing, etc.) ...
+
+# Perform memory merging within the active layer
+memory.merge_similar_nodes(similarity_threshold=0.9)  # Example similarity threshold
+
+# Check for and decay/remove similar memories across layers
+memory.check_cross_layer_similarity(similarity_threshold=0.95, time_threshold=60, decay_factor=0.5)  # Example thresholds and decay factor
+
+# ... (Continue with the next iteration of your training loop) ...
+'''
