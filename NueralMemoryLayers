@@ -47,14 +47,18 @@ class HierarchicalMemory:
         self.num_layers = num_layers  # Number of memory layers is now a parameter
         self.root_memory_chunk_size = root_memory_chunk_size
         self.cache_capacity = cache_capacity
-        self.active_layer = 0
+        self.active_layer = 0  # Index of the currently active layer
 
         # Create memory layers dynamically
         self.memory_layers = [self._create_memory_layer() for _ in range(self.num_layers)]
         self.surprise_layers = [self._create_memory_layer() for _ in range(self.num_layers)]
 
         self._similarity_cache = LRUCache(self.cache_capacity)
-      
+
+    def _create_memory_layer(self):
+        """Creates a new memory layer with a root node."""
+        return MemoryNode(self.root_memory_chunk_size, time.time())
+
     def traverse(self, key, similarity_threshold, create_threshold):
         """
         Traverses the hierarchical memory to find the most relevant node for a given key.
@@ -172,6 +176,12 @@ class HierarchicalMemory:
     def is_layer_full(self, threshold_factor=0.8):
         """
         Checks if the active memory layer is considered full based on a threshold factor.
+
+        Args:
+            threshold_factor: The proportion of nodes that must be non-empty to consider the layer full.
+
+        Returns:
+            True if the layer is considered full, False otherwise.
         """
         active_memory_root = self.memory_layers[self.active_layer]
         active_surprise_root = self.surprise_layers[self.active_layer]
@@ -180,6 +190,20 @@ class HierarchicalMemory:
         num_non_empty_nodes = self._count_non_empty_nodes(active_memory_root)
 
         return num_non_empty_nodes / num_nodes >= threshold_factor
+
+    def _count_nodes(self, node):
+        """Counts the total number of nodes in a subtree."""
+        count = 1
+        for child in node.children:
+            count += self._count_nodes(child)
+        return count
+
+    def _count_non_empty_nodes(self, node):
+        """Counts the number of non-empty nodes in a subtree."""
+        count = 1 if node.memory_chunk.any() else 0  # Check if the node's memory chunk is non-empty
+        for child in node.children:
+            count += self._count_non_empty_nodes(child)
+        return count
 
    def merge_similar_nodes(self, similarity_threshold):
         """
@@ -211,13 +235,9 @@ class HierarchicalMemory:
                     similarity = torch.dot(node.children[i].centroid, node.children[j].centroid)
                     self._similarity_cache.put(node_pair, similarity)  # Use put() for LRU cache
 
-  def save(self, filepath):
-        """
-        Saves the hierarchical memory to a file.
-
-        Args:
-            filepath: The path to the file where the memory will be saved.
-        """
+  
+    def save(self, filepath):
+        """Saves the hierarchical memory to a file."""
         # Don't save the cache
         cache_holder = self._similarity_cache
         self._similarity_cache = None
@@ -230,32 +250,26 @@ class HierarchicalMemory:
 
     @staticmethod
     def load(filepath, cache_capacity=10000):
-        """
-        Loads a hierarchical memory from a file.
-
-        Args:
-            filepath: The path to the file from which the memory will be loaded.
-            cache_capacity: The capacity for the new LRU cache.
-
-        Returns:
-            The loaded HierarchicalMemory object.
-        """
+        """Loads a hierarchical memory from a file."""
         with open(filepath, 'rb') as f:
             loaded_memory = pickle.load(f)
 
-        # Generate new unique IDs for all nodes
+        # Generate new unique IDs for all nodes in all layers
         def regenerate_ids(node):
             node.id = uuid.uuid4()
             for child in node.children:
                 regenerate_ids(child)
 
-        regenerate_ids(loaded_memory.root)
-        regenerate_ids(loaded_memory.surprise_root)  # Regenerate IDs for the surprise hierarchy as well
+        for layer in loaded_memory.memory_layers:
+            regenerate_ids(layer)
+        for layer in loaded_memory.surprise_layers:
+            regenerate_ids(layer)
 
-        # Initialize a new LRU cache
+        # Initialize a new LRU cache for the active layer
         loaded_memory._similarity_cache = LRUCache(cache_capacity)
 
         return loaded_memory
+
 
 class NeuralMemory(nn.Module):
     def __init__(self, input_size, memory_size, forgetting_list, beta, similarity_threshold, create_threshold, alpha, eta, theta):
