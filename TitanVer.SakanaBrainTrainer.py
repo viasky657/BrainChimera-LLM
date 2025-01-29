@@ -7460,7 +7460,7 @@ if __name__ == "__main__":
     # Model and tokenizer initialization
     model_name = "this model being trained"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.pad_token = tokenizer.eos_token #Will be using binary patches and RNN-Multinetwork for encoder and processing instead of a tokenzier. Still needs a decoder though. 
     model = AutoModelForCausalLM.from_pretrained(model_name)
 
     # Tasks and SVF initialization
