@@ -176,7 +176,7 @@ class BinaryLatentTransformer(nn.Module):
 
         return output
 
-     def _tova_compress(self, h: torch.Tensor) -> torch.Tensor:
+    def _tova_compress(self, h: torch.Tensor) -> torch.Tensor:
         """Compress states using a simplified TOVA-like policy."""
         batch_size, num_patches, num_latent_states, hidden_size = h.shape
 
@@ -350,8 +350,40 @@ class BinaryLatentTransformer(nn.Module):
         """Adds data to the exploration buffer for temperature adaptation."""
         if self.exploration_data is None:
             self.exploration_data = []
-        if len(self.exploration_data) < self.evaluation_set_size:
-          self.exploration_data.append((states.detach().cpu(), state_qualities.detach().cpu(), rewards.detach().cpu())) #Move tensors to CPU to avoid GPU memory issues
+        
+        # Add to current batch
+        self.exploration_batch.append((states.detach().cpu(), state_qualities.detach().cpu(), rewards.detach().cpu()))
+        
+        # Process batch if full
+        if len(self.exploration_batch) >= self.exploration_batch_size:
+            self._process_exploration_batch()
+            
+        # Keep exploration data within size limit
+        if len(self.exploration_data) >= self.evaluation_set_size:
+            self.exploration_data = self.exploration_data[-self.evaluation_set_size:]
+            
+    def _process_exploration_batch(self):
+        """Processes a batch of exploration data."""
+        if not self.exploration_batch:
+            return
+
+        # Combine batch data
+        states_list, qualities_list, rewards_list = zip(*self.exploration_batch)
+        states = torch.stack(states_list)
+        qualities = torch.stack(qualities_list)
+        rewards = torch.stack(rewards_list)
+
+        # Calculate quality metrics
+        quality_mask = qualities > self.state_quality_threshold
+        unique_states = torch.unique(states[quality_mask], dim=0)
+        num_unique = len(unique_states)
+
+        # Calculate diversity metric
+        diversity = torch.unique(rewards).size(0) / rewards.size(0)
+
+        # Add to exploration data
+        self.exploration_data.append((states, qualities, rewards, num_unique, diversity))
+        self.exploration_batch = []
 
 '''
 
