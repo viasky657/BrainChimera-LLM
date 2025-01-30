@@ -5434,11 +5434,6 @@ def map_to_regions(self,
         min_patch_size: int = 4,  # Minimum patch size in bytes
         max_patch_size: int = 32,  # Maximum patch size in bytes
         
-        # SELF-GOAL parameters
-        max_goals: int = 5,
-        min_importance: float = 0.1,
-        exploration_factor: float = 0.5,
-        initial_temperature: float = 1.0
     ):
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -5465,12 +5460,6 @@ def map_to_regions(self,
         self.dropout = dropout
         self.paragraph_dim = paragraph_dim
         self.region_dim = region_dim
-        
-        # SELF-GOAL parameters
-        self.max_goals = max_goals
-        self.min_importance = min_importance
-        self.exploration_factor = exploration_factor
-        self.initial_temperature = initial_temperature
 
         # Entropy-based patching parameters
         self.entropy_threshold = entropy_threshold
@@ -5496,30 +5485,6 @@ class BrainAwareBLTTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.config = config or TrainingConfig()
-
-        # Initialize HierarchicalEpisodicMemory
-        episodic_memory_config = EpisodicMemoryConfig(
-            capacity=self.config.episodic_memory_capacity,
-            cluster_method=self.config.episodic_memory_cluster_method,
-            hdbscan_min_cluster_size=self.config.hdbscan_min_cluster_size,
-            hdbscan_metric=self.config.hdbscan_metric,
-            hdbscan_cluster_selection_epsilon=self.config.hdbscan_cluster_selection_epsilon,
-            som_grid_size=self.config.som_grid_size,
-            som_input_dim=self.config.som_input_dim,
-            som_sigma=self.config.som_sigma,
-            som_learning_rate=self.config.som_learning_rate,
-            enable_cluster_maintenance=self.config.enable_cluster_maintenance,
-            cluster_maintenance_interval=self.config.cluster_maintenance_interval,
-            cluster_centroid_update_freq=self.config.cluster_centroid_update_freq,
-            cluster_relevance_threshold=self.config.cluster_relevance_threshold,
-            max_cluster_size=self.config.max_cluster_size,
-            merge_similarity_threshold=self.config.merge_similarity_threshold,
-            hierarchical_clustering_method=self.config.hierarchical_clustering_method
-        )
-        self.model.episodic_memory = HierarchicalEpisodicMemory(
-            capacity=self.config.episodic_memory_capacity,
-            config=episodic_memory_config
-        )
 
         # Add these lines to store optimizer and scheduler state dicts
         self.optimizer_state_dict = None
