@@ -927,33 +927,7 @@ class FactualityRewardModel(nn.Module):
         scores = torch.sigmoid(scores / self.factuality_temperature)
         
         return scores
-
-class GoalManager:
-    """
-    Manages hierarchical goal decomposition and selection using an internal approach.
-    """
-    def __init__(self, config):
-        self.config = config
-        
-        # Goal tree
-        self.root = None
-        
-        # Tracking
-        self.selected_goals = []
-        self.goal_history = []
-        self.goal_embeddings = {}  # Store embeddings of goals for similarity checks
-        
-        # Parameters
-        self.max_goals = config.max_goals
-        self.min_importance = config.min_importance
-        self.exploration_factor = config.exploration_factor
-        
-        # B-STAR parameters
-        self.temperature = self.config.initial_temperature  # Initial temperature for exploration
-        self.min_temperature = 0.1 # Min temperature
-        self.temperature_decay = 0.99 # Decay for temperature
-        self.similarity_threshold = 0.85 # Threshold for filtering similar goals
-
+          
 class ByteLatentTransformer(nn.Module):
     """BLT model with enhanced binary latent memory integration, brain-inspired components, episodic memory, Dynamic patching, multi-state RNN integration, and SELFGOAL."""
 
