@@ -2,11 +2,18 @@
 import torch
 import torch.nn as nn
 from typing import Optional, List, Tuple
+from NueralMemoryLayers import HierarchicalMemory
 
 class BinaryLatentTransformer(nn.Module):
-    """Transformer encoder with Multi-State RNN features and reflection for latent processing"""
+    """Transformer encoder with Multi-State RNN features, reflection, and episodic memory for latent processing"""
 
-    def __init__(self, hidden_size: int, num_layers: int, num_heads: int, ff_dim: int, max_states: Optional[int] = None, patch_size: int = 4, num_latent_states: int = 4, reflection_threshold: float = 0.5, state_history_size=5, initial_temperature: float = 1.0, temperature_decay: float = 0.995, min_temperature: float = 0.5, b_star_n_star: int = 4):
+    def __init__(self, hidden_size: int, num_layers: int, num_heads: int, ff_dim: int, max_states: Optional[int] = None, patch_size: int = 4, num_latent_states: int = 4, reflection_threshold: float = 0.5, state_history_size=5, initial_temperature: float = 1.0, temperature_decay: float = 0.995, min_temperature: float = 0.5, b_star_n_star: int = 4, memory_layer: Optional[HierarchicalMemory] = None):
+        super().__init__()
+        self.memory_layer = memory_layer if memory_layer is not None else HierarchicalMemory(
+            num_layers=4,
+            root_memory_chunk_size=(hidden_size,),
+            cache_capacity=10000
+        )
         super().__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -80,6 +87,13 @@ class BinaryLatentTransformer(nn.Module):
         self.exploration_data = None
 
     def forward(self, x: torch.Tensor, thought_targets: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Store memories in the episodic memory layer
+        if x is not None:
+            self.memory_layer.process(x)
+            
+        # Access relevant memories from episodic memory
+        # This can be used to condition the generation
+        memory_output = self.memory_layer.retrieve()
         """
         Forward pass with Multi-State RNN features and reflection
 
