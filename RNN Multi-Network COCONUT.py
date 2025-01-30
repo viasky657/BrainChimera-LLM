@@ -176,29 +176,69 @@ class BinaryLatentTransformer(nn.Module):
 
         return output
 
-    def _tova_compress(self, h: torch.Tensor) -> torch.Tensor:
+     def _tova_compress(self, h: torch.Tensor) -> torch.Tensor:
         """Compress states using a simplified TOVA-like policy."""
-        # Reshape h to combine the num_patches and num_latent_states dimensions
         batch_size, num_patches, num_latent_states, hidden_size = h.shape
-        h = h.view(batch_size, num_patches * num_latent_states, hidden_size)
 
-        query = self.tova_query(h).unsqueeze(2)  # Add a dimension for broadcasting
-        key = self.tova_key(h)
-        value = self.tova_value(h)
+        # 1. Pre-compute Queries, Keys, and Values
+        query = self.tova_query(h)  # [batch_size, num_patches, num_latent_states, hidden_size]
+        key = self.tova_key(h)      # [batch_size, num_patches, num_latent_states, hidden_size]
+        value = self.tova_value(h)  # [batch_size, num_patches, num_latent_states, hidden_size]
 
-        # Compute attention scores
-        attn_scores = torch.bmm(query, key.transpose(1, 2)).squeeze(2)  # [batch_size, num_patches * num_latent_states]
+        # 2. Attention per Patch (Intra-Patch Attention)
+        # This reduces computations by computing attention within each patch first.
+        attn_scores_intra = torch.einsum("bpqh,bpkh->bpqk", query, key) / (hidden_size ** 0.5)  # [batch_size, num_patches, num_latent_states, num_latent_states]
+        attn_weights_intra = torch.softmax(attn_scores_intra, dim=-1)
+        attended_states_intra = torch.einsum("bpqk,bpkh->bpqh", attn_weights_intra, value)  # [batch_size, num_patches, num_latent_states, hidden_size]
 
-        # Select top-k states
-        _, indices = torch.topk(attn_scores, self.max_states, dim=1)
+        # 3. Reduce Latent States (within each patch)
+        # We'll keep only the top-k states based on intra-patch attention.
+        # This further reduces memory before inter-patch attention.
+        k_intra = min(self.num_latent_states // 2, self.max_states) # Example: Keep at least half, but not more than max_states
+        _, topk_indices_intra = torch.topk(attn_weights_intra.sum(dim=-2), k_intra, dim=-1) # Sum scores across states, then find top-k indices
+        attended_states_reduced = torch.gather(attended_states_intra, 2, topk_indices_intra.unsqueeze(-1).expand(-1, -1, -1, hidden_size)) # [batch_size, num_patches, k_intra, hidden_size]
 
-        # Gather the top-k hidden states
-        h_new = torch.gather(h, 1, indices.unsqueeze(-1).expand(-1, -1, h.size(-1)))
+        # 4. Inter-Patch Attention (Global Attention)
+        # Now, compute attention across patches, but using the reduced set of states.
+        # Reshape to combine num_patches and reduced latent states for global attention
+        attended_states_reduced = attended_states_reduced.view(batch_size, num_patches * k_intra, hidden_size)
+        query_global = self.tova_query(attended_states_reduced) # [batch_size, num_patches * k_intra, hidden_size]
+        key_global = self.tova_key(attended_states_reduced) # [batch_size, num_patches * k_intra, hidden_size]
+        value_global = self.tova_value(attended_states_reduced) # [batch_size, num_patches * k_intra, hidden_size]
 
-        # Reshape h_new back to original shape
-        h_new = h_new.view(batch_size, num_patches, self.num_latent_states, hidden_size)
+        attn_scores_global = torch.einsum("bqi,bki->bqk", query_global, key_global) / (hidden_size ** 0.5)  # [batch_size, num_patches * k_intra, num_patches * k_intra]
 
-        return h_new
+        # 5. Masked Attention (Optional but Recommended)
+        # Create a mask to prevent attending to states from the same patch.
+        # This encourages diversity in the selected states.
+        if num_patches > 1:  # Only apply masking if there's more than one patch
+            mask_global = torch.block_diag(*[torch.ones(k_intra, k_intra) for _ in range(num_patches)]).to(attn_scores_global.device)
+            attn_scores_global = attn_scores_global.masked_fill(mask_global == 1, float('-inf'))
+
+        attn_weights_global = torch.softmax(attn_scores_global, dim=-1) # [batch_size, num_patches * k_intra, num_patches * k_intra]
+
+        # 6. Select Top-M States (Global)
+        # Select the top states globally, across all patches.
+        _, topk_indices_global = torch.topk(attn_weights_global.sum(dim=-2), self.max_states, dim=-1)  # Sum scores across patches to rank states globally, then find top-k indices
+        attended_states_global = torch.gather(value_global, 1, topk_indices_global.unsqueeze(-1).expand(-1, -1, hidden_size)) # [batch_size, max_states, hidden_size]
+
+        # 7. Combine Selected States (Optional)
+        # You can optionally combine the globally selected states using a weighted average
+        # based on their global attention scores. This step is not strictly necessary
+        # if you want to keep the states separate.
+        attn_weights_final = torch.gather(attn_weights_global.sum(dim=-2), 1, topk_indices_global)
+        attn_weights_final = attn_weights_final / attn_weights_final.sum(dim=-1, keepdim=True)  # Normalize
+        combined_state = torch.einsum("bmi,bm->bi", attended_states_global, attn_weights_final) # [batch_size, hidden_size]
+
+        # 8. Reshape and Return
+        # If you combined the states, expand the dimensions to match the original shape
+        # If you didn't combine them, attended_states_global is already in the correct shape
+        if num_patches > 1:
+            combined_state = combined_state.unsqueeze(1).unsqueeze(2).expand(-1, num_patches, self.num_latent_states, -1) # Expand to match original shape
+        else:
+            combined_state = combined_state.unsqueeze(1).expand(-1, num_patches, -1) # Expand to match original shape
+            combined_state = combined_state.unsqueeze(2).repeat(1, 1, self.num_latent_states, 1) # Repeat to match original shape for num_latent_states
+        return combined_state
 
     def bytes_to_patches(self, x: torch.Tensor) -> torch.Tensor:
         """Converts a sequence of bytes to a sequence of patches.
