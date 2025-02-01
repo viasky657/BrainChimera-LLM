@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, List, Tuple
 from NueralMemoryLayers import HierarchicalMemory
+from NueralMemoryLayers import  MemoryNode
 
 class BinaryLatentTransformer(nn.Module):
     """Transformer encoder with Multi-State RNN features, reflection, and episodic memory for latent processing"""
