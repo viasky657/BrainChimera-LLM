@@ -1,4 +1,3 @@
-
 import time
 import uuid
 import statistics
@@ -49,9 +48,10 @@ class LRUCache:
     def put(self, key, value):
         if key in self.cache:
             self.cache.move_to_end(key)
-        self.cache[key] = value
+            self.cache[key] = value
         if len(self.cache) > self.capacity:
             self.cache.popitem(last=False)
+
 
 class HierarchicalMemory:
     def __init__(self, num_layers, root_memory_chunk_size, cache_capacity=10000, use_fp16=False):
@@ -482,9 +482,9 @@ class HierarchicalMemory:
         if merged_node not in self.memory_layers[layer2_index].children:
             self.memory_layers[layer2_index].children.append(merged_node)
 
-        # Prune children of the merged node (optional)
+        # Prune children of the merged node (optional) by setting weights to zero
         prune_start_time = time.time()
-        self.prune_children(merged_node, layer2_index, 0.8, 0.7)
+        self.prune_children_zero_weights(merged_node, layer2_index, 0.8, 0.7)
         prune_elapsed_time = time.time() - prune_start_time
         self._track_time("prune", prune_elapsed_time)
 
@@ -690,124 +690,124 @@ class HierarchicalMemory:
         """Gets the current node count for a given layer."""
         return self.layer_node_counts.get(layer_index, 0)  # Return 0 if layer not found
 
-    def merge_similar_nodes_chunked(self, similarity_threshold, available_time_seconds, max_chunk_size=500):
-        """
-        Merges similar nodes within the active layer in chunks, dynamically adjusting chunk size.
-        """
-        active_memory_root = self.memory_layers[self.active_layer]
-        active_surprise_root = self.surprise_layers[self.active_layer]
+def merge_similar_nodes_chunked(self, similarity_threshold, available_time_seconds, max_chunk_size=500):
+    """
+    Merges similar nodes within the active layer in chunks, dynamically adjusting chunk size.
+    """
+    active_memory_root = self.memory_layers[self.active_layer]
+    active_surprise_root = self.surprise_layers[self.active_layer]
 
-        # Load the last processed cluster ID for the active layer
-        start_node_id = self.last_processed_cluster_id.get(self.active_layer) if self.last_processed_cluster_id else None
+    # Load the last processed cluster ID for the active layer
+    start_node_id = self.last_processed_cluster_id.get(self.active_layer) if self.last_processed_cluster_id else None
 
-        # Find the starting node based on the ID
-        if start_node_id:
-            start_node = self._find_node_by_id(start_node_id, active_memory_root)
-        else:
-            start_node = active_memory_root
+    # Find the starting node based on the ID
+    if start_node_id:
+        start_node = self._find_node_by_id(start_node_id, active_memory_root)
+    else:
+        start_node = active_memory_root
 
-        # If the start node is not found (e.g., it was merged earlier), start from the root
-        if not start_node:
-            start_node = active_memory_root
+    # If the start node is not found (e.g., it was merged earlier), start from the root
+    if not start_node:
+        start_node = active_memory_root
 
-        # Update layer size if needed
-        if self._should_update_layer_size():
-            self._update_layer_size(self.active_layer)
-            self.last_layer_size_update_time = time.time()
+    # Update layer size if needed
+    if self._should_update_layer_size():
+        self._update_layer_size(self.active_layer)
+        self.last_layer_size_update_time = time.time()
 
-        # Estimate layer size and processing time per node
-        layer_size = self._get_layer_size(self.active_layer)
-        processing_time_per_node_seconds = self._get_average_processing_time("merge_nodes")
+    # Estimate layer size and processing time per node
+    layer_size = self._get_layer_size(self.active_layer)
+    processing_time_per_node_seconds = self._get_average_processing_time("merge_nodes")
 
-        # Calculate dynamic chunk size
-        chunk_size = self._calculate_dynamic_chunk_size(available_time_seconds, layer_size, processing_time_per_node_seconds, max_chunk_size)
+    # Calculate dynamic chunk size
+    chunk_size = self._calculate_dynamic_chunk_size(available_time_seconds, layer_size, processing_time_per_node_seconds, max_chunk_size)
 
-        processed_count = 0
-        for node in self._traverse_layer_from_node(start_node):
-            if processed_count >= chunk_size:
-                break
+    processed_count = 0
+    for node1 in self._traverse_layer_from_node(start_node):
+        if processed_count >= chunk_size:
+            break
 
-            # Track time for merging
-            merge_start_time = time.time()
-            self._merge_similar_nodes_recursive(node, active_surprise_root, similarity_threshold)
-            merge_elapsed_time = time.time() - merge_start_time
-            self._track_time("merge_nodes", merge_elapsed_time)
+        # Track time for merging
+        merge_start_time = time.time()
+        self._merge_similar_nodes_recursive(node1, active_surprise_root, similarity_threshold) # Corrected node to node1
+        merge_elapsed_time = time.time() - merge_start_time
+        self._track_time("merge_nodes", merge_elapsed_time)
 
-            # Update the last processed cluster ID for the active layer
-            self.last_processed_cluster_id[self.active_layer] = node.id
-            processed_count += 1
+        # Update the last processed cluster ID for the active layer
+        self.last_processed_cluster_id[self.active_layer] = node1.id
+        processed_count += 1
 
-        # If we've reached the end of the layer, reset the last processed ID
-        if processed_count < chunk_size:
-            self.last_processed_cluster_id[self.active_layer] = None
+    # If we've reached the end of the layer, reset the last processed ID
+    if processed_count < chunk_size:
+        self.last_processed_cluster_id[self.active_layer] = None
 
-        # Update processing time after each node
-        self._update_processing_time(self.active_layer, merge_elapsed_time)
+    # Update processing time after each node
+    self._update_processing_time(self.active_layer, merge_elapsed_time)
 
-    def check_cross_layer_similarity_chunked(self, similarity_threshold, time_threshold, decay_factor=0.5, max_chunk_size=500, available_time_seconds=None):
-        """
-        Checks for similar memories across layers and merges them in chunks, dynamically adjusting chunk size.
-        Skips inactive layers.
-        """
-        if available_time_seconds is None:
-            available_time_seconds = float('inf')
+def check_cross_layer_similarity_chunked(self, similarity_threshold, time_threshold, decay_factor=0.5, max_chunk_size=500, available_time_seconds=None):
+    """
+    Checks for similar memories across layers and merges them in chunks, dynamically adjusting chunk size.
+    Skips inactive layers.
+    """
+    if available_time_seconds is None:
+        available_time_seconds = float('inf')
 
-        start_time = time.time()
+    start_time = time.time()
 
-        start_layer = self.last_processed_layer_index if self.last_processed_layer_index is not None else 0
-        for i in range(start_layer, self.num_layers):
+    start_layer = self.last_processed_layer_index if self.last_processed_layer_index is not None else 0
+    for i in range(start_layer, self.num_layers):
+        # Skip inactive layers
+        if not self.active_layers[i]:
+            print(f"Skipping inactive layer {i}")
+            continue
+
+        for j in range(i + 1, self.num_layers):
             # Skip inactive layers
-            if not self.active_layers[i]:
-                print(f"Skipping inactive layer {i}")
+            if not self.active_layers[j]:
+                print(f"Skipping inactive layer {j}")
                 continue
 
-            for j in range(i + 1, self.num_layers):
-                # Skip inactive layers
-                if not self.active_layers[j]:
-                    print(f"Skipping inactive layer {j}")
-                    continue
+            print(f"Checking similarity between layers {i} and {j}")
 
-                print(f"Checking similarity between layers {i} and {j}")
+            # Load the last processed cluster ID for this pair of layers
+            last_processed_id = self.last_processed_cluster_id.get((i, j))
 
-                # Load the last processed cluster ID for this pair of layers
-                last_processed_id = self.last_processed_cluster_id.get((i, j))
+            # Update layer sizes if needed
+            if self._should_update_layer_size():
+                for k in range(self.num_layers):
+                    self._update_layer_size(k)
+                self.last_layer_size_update_time = time.time()
 
-                # Update layer sizes if needed
-                if self._should_update_layer_size():
-                    for k in range(self.num_layers):
-                        self._update_layer_size(k)
-                    self.last_layer_size_update_time = time.time()
+            # Calculate remaining time
+            elapsed_time = time.time() - start_time
+            remaining_time = available_time_seconds - elapsed_time
 
-                # Calculate remaining time
-                elapsed_time = time.time() - start_time
-                remaining_time = available_time_seconds - elapsed_time
+            # Estimate layer size and processing time per node
+            layer1_size = self._get_layer_size(i)
+            layer2_size = self._get_layer_size(j)
+            processing_time_per_node_seconds = self._get_average_processing_time("cross_layer_merge")
 
-                # Estimate layer size and processing time per node
-                layer1_size = self._get_layer_size(i)
-                layer2_size = self._get_layer_size(j)
-                processing_time_per_node_seconds = self._get_average_processing_time("cross_layer_merge")
+            # Calculate dynamic chunk size based on the smaller layer size
+            chunk_size = self._calculate_dynamic_chunk_size(remaining_time, min(layer1_size, layer2_size), processing_time_per_node_seconds, max_chunk_size)
 
-                # Calculate dynamic chunk size based on the smaller layer size
-                chunk_size = self._calculate_dynamic_chunk_size(remaining_time, min(layer1_size, layer2_size), processing_time_per_node_seconds, max_chunk_size)
+            if not self._compare_layers_chunked(
+                self.memory_layers[i],
+                self.surprise_layers[i],
+                self.memory_layers[j],
+                self.surprise_layers[j],
+                similarity_threshold,
+                time_threshold,
+                decay_factor,
+                chunk_size,
+                last_processed_id,
+                remaining_time
+            ):
+                # Save the progress and return if the chunk is not finished or time is up
+                self.last_processed_layer_index = i
+                return
 
-                if not self._compare_layers_chunked(
-                    self.memory_layers[i],
-                    self.surprise_layers[i],
-                    self.memory_layers[j],
-                    self.surprise_layers[j],
-                    similarity_threshold,
-                    time_threshold,
-                    decay_factor,
-                    chunk_size,
-                    last_processed_id,
-                    remaining_time
-                ):
-                    # Save the progress and return if the chunk is not finished or time is up
-                    self.last_processed_layer_index = i
-                    return
-
-            # Reset the last processed layer index after finishing a layer
-            self.last_processed_layer_index = None
+        # Reset the last processed layer index after finishing a layer
+        self.last_processed_layer_index = None
 
     def _compare_layers_chunked(self, layer1_root, surprise_layer1_root, layer2_root, surprise_layer2_root, similarity_threshold, time_threshold, decay_factor, chunk_size, start_node_id=None, available_time_seconds=None):
         """
@@ -870,9 +870,10 @@ class HierarchicalMemory:
         self.last_processed_cluster_id[layer_pair] = None
         return True
 
-    def prune_children(self, node, layer_index, threshold, reconnection_similarity_threshold):
+    def prune_children_zero_weights(self, node, layer_index, threshold, reconnection_similarity_threshold):
         """
-        Prunes children of a node by resetting their memory content and reconnecting them.
+        Prunes children of a node by resetting their memory content to zero and reconnecting them.
+        Instead of removing the child node, it sets the memory_chunk, centroid and surprise_chunk to zero.
         """
         children_to_reset = []
         for child in node.children:
@@ -881,12 +882,12 @@ class HierarchicalMemory:
                 children_to_reset.append(child)
 
         for child in children_to_reset:
-            # Reset the child's memory content
+            # Reset the child's memory content to zero
             child.memory_chunk = torch.zeros_like(child.memory_chunk)
             child.timestamp = time.time()  # Update the timestamp
-            child.centroid = torch.zeros_like(child.centroid) # Reset centroid
+            child.centroid = torch.zeros_like(child.centroid)  # Reset centroid
 
-            # Also reset the surprise information
+            # Also reset the surprise information to zero
             if hasattr(child, 'surprise_chunk') and child.surprise_chunk is not None:
                 child.surprise_chunk = torch.zeros_like(child.surprise_chunk)
 
@@ -897,14 +898,14 @@ class HierarchicalMemory:
             reconnect_elapsed_time = time.time() - reconnect_start_time
             self._track_time("reconnect", reconnect_elapsed_time)
 
-            # Update the Faiss index
+            # Update the Faiss index (no need to remove and re-add, just update in place)
             update_index_start_time = time.time()
             self._update_node_in_index(child, layer_index)
             update_index_elapsed_time = time.time() - update_index_start_time
             self._track_time("update_index", update_index_elapsed_time)
 
             # Recursively prune the child's subtree (if needed)
-            self.prune_children(child, layer_index, threshold, reconnection_similarity_threshold)
+            self.prune_children_zero_weights(child, layer_index, threshold, reconnection_similarity_threshold)
 
     def _add_node_to_index(self, node, layer_index):
         """Adds a node's centroid to the Faiss index of the corresponding layer."""
@@ -1066,7 +1067,7 @@ class HierarchicalMemory:
 
         # 2. Use the BLT Local Decoder to get the probability distribution over the next patch
         with torch.no_grad():
-            next_patch_probabilities = self.blt_model.local_decoder.predict_next_patch(context_patches, blt_input)
+            next_patch_probabilities, actual_next_patch = self.blt_model.local_decoder.predict_next_patch(context_patches, blt_input)
 
         # 3. Convert the distribution over byte sequences (patches) into a single surprise value.
         surprise = -torch.log(next_patch_probabilities[actual_next_patch])
@@ -1114,7 +1115,6 @@ class HierarchicalMemory:
                 timer.start()
 
         optimization_task()
-
 
 '''
 
