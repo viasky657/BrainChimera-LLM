@@ -6,238 +6,71 @@ import typing
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+
+class BrainRegionWrapper(nn.Module):
+    """
+    Wraps region-specific encoders (Transformers) and manages forward pass through them.
+    """
+    def __init__(self, hidden_size: int, num_layers: int, num_heads: int, ff_dim: int, regions: List[str]):
+        super().__init__()
+        self.regions = regions
+        self.region_encoders = nn.ModuleDict({
+            region: nn.TransformerEncoder(
+                CustomTransformerEncoderLayer(d_model=hidden_size, nhead=num_heads, dim_feedforward=ff_dim, batch_first=True),
+                num_layers=num_layers
+            )
+            for region in regions
+        })
+
+    def forward(self, current_input_reshaped: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass through region-specific encoders.
+
+        Args:
+            current_input_reshaped: Reshaped input tensor [batch_size * num_patches, num_latent_states, hidden_size]
+
+        Returns:
+            Dictionary of region-specific encoder outputs.
+        """
+        region_outputs = {}
+        for region_name, encoder in self.region_encoders.items():
+            region_outputs[region_name] = encoder(current_input_reshaped)  # Process input through each region-specific encoder
+        return region_outputs
+
+
 class PrefrontalCortex(nn.Module):
     """
-    Prefrontal Cortex module that interfaces with the BinaryLatentTransformer's
-    RNN multi-network latent space for safety monitoring and symbolic processing.
+    Prefrontal Cortex module adapted for COCONUT to interface with continuous thought.
     """
-    def __init__(self, patch_size, hidden_size, num_layers=3, binary_transformer=None):
+    def __init__(self, hidden_size, num_layers=3, binary_latent_transformer=None):  # Removed patch_size
         super().__init__()
-        self.patch_size = patch_size
-        self.hidden_size = hidden_size
-        
-        # Reference to the parent BinaryLatentTransformer's components
-        self.binary_transformer = binary_transformer
-        
-        # Safety monitoring module
-        self.metacognitive = MetacognitiveModule(hidden_size, hidden_size)
-        
-        # Interface layer for latent space processing
-        self.latent_proj = nn.Linear(patch_size * hidden_size, hidden_size)
-        
-    def forward(self, binary_patches):
-        """Process binary patches through symbolic latent space with safety checks"""
-        batch_size, num_patches, _ = binary_patches.shape
-        
-        # Project patches to latent space dimensions
-        latent_input = self.latent_proj(binary_patches)
-        
-        # Process through BinaryLatentTransformer's latent RNN
-        latent_states, _ = self.binary_transformer.latent_rnn(latent_input)
-        
-        # Perform safety monitoring on hidden states
-        safety_report = self.metacognitive(latent_states, latent_states)
-        
-        # Apply corrections if needed
-        if safety_report['needs_reflection']:
-            corrected_states = safety_report['corrected_state']
-            # Store reflection in memory
-            self.binary_transformer.memory_layer.store(
-                corrected_states.detach(),
-                tags=['safety_correction']
-            )
-            return corrected_states
-            
-        return latent_states
-
-class MetacognitiveModule(nn.Module):
-    """
-    Enhanced Metacognitive Module with reflection capabilities and safety monitoring.
-    """
-    def __init__(self, hidden_dim, memory_dim):
-        super(MetacognitiveModule, self).__init__()
-        self.hidden_dim = hidden_dim
-        self.memory_dim = memory_dim
-
-        # Original monitor layers for safety
-        self.hidden_monitor = nn.Linear(hidden_dim, 1)
-        self.memory_monitor = nn.Linear(memory_dim, 1)
-        
-        # Reflection generation layers
-        self.reflection_net = nn.Sequential(
-            nn.Linear(hidden_dim + memory_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh()
-        )
-        
-        # Error detection 
-        self.error_detector = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Sigmoid()
-        )
-        
-        # Self-correction mechanism
-        self.correction_net = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-        
-        # Memory of past reflections (stores last k reflections)
-        self.reflection_memory = []
-        self.max_reflections = 5
-        
-    def forward(self, hidden_state, memory):
-        # Original safety monitoring
-        hidden_score = torch.sigmoid(self.hidden_monitor(hidden_state))
-        memory_score = torch.sigmoid(self.memory_monitor(memory))
-        safety_flag = (hidden_score + memory_score) / 2
-        
-        # Generate reflection
-        combined = torch.cat([hidden_state, memory], dim=-1)
-        reflection = self.reflection_net(combined)
-        
-        # Detect potential errors
-        error_prob = self.error_detector(reflection)
-        
-        # Store reflection in memory
-        if len(self.reflection_memory) >= self.max_reflections:
-            self.reflection_memory.pop(0)
-        self.reflection_memory.append(reflection.detach())
-        
-        # If error probability is high, attempt self-correction
-        corrected_state = hidden_state
-        if error_prob > 0.5:
-            # Use reflection and original state for correction
-            correction_input = torch.cat([hidden_state, reflection], dim=-1)
-            corrected_state = self.correction_net(correction_input)
-            
-        return {
-            'safety_flag': safety_flag,
-            'reflection': reflection,
-            'error_prob': error_prob,
-            'corrected_state': corrected_state,
-            'needs_reflection': error_prob > 0.5
-        }
-        
-    def get_reflection_history(self):
-        """Get history of past reflections"""
-        return self.reflection_memory
-        
-    def reflect_on_error(self, error_context):
-        """Generate targeted reflection based on error context"""
-        if not self.reflection_memory:
-            return None
-            
-        # Combine error context with past reflections
-        past_reflections = torch.stack(self.reflection_memory)
-        avg_reflection = past_reflections.mean(dim=0)
-        
-        # Generate new reflection considering error context
-        combined = torch.cat([avg_reflection, error_context], dim=-1)
-        new_reflection = self.reflection_net(combined)
-        
-        return new_reflection
-
-class Value(nn.Module):
-    """
-    Value network for evaluating safety of binary patches in latent space
-    """
-    def __init__(self, patch_size, hidden_dim):
-        super(Value, self).__init__()
-        self.patch_size = patch_size
-        self.hidden_dim = hidden_dim
-
-        # Process binary patch structure
-        self.value_net = nn.Sequential(
-            nn.Linear(patch_size * hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, binary_patches):
-        """Compute safety values for binary patches [batch, num_patches, patch_size*hidden_dim]"""
-        batch_size, num_patches, _ = binary_patches.shape
-        flattened = binary_patches.view(batch_size * num_patches, -1)
-        values = torch.sigmoid(self.value_net(flattened))
-        return values.view(batch_size, num_patches, 1)
-    
-# Custom Transformer encoder with attention tracking
-class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.attention_weights = None
-
-    def forward(self, src, src_mask=None, src_key_padding_mask=None):
-        output, attention_weights = self.self_attn(src, src, src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
-        self.attention_weights = attention_weights
-        return output
-
-    def get_attention_weights(self):
-        return self.attention_weights
-    
-class SensoryPerception(nn.Module):
-    def __init__(self, input_channels: int, hidden_size: int):
-        super().__init__()
-        # Example: Simple CNN for image input
-        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
-        self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc = nn.Linear(64 * 8 * 8, hidden_size) # Assuming input images are resized to 32x32
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [batch_size, input_channels, height, width]
-        x = self.pool1(self.relu1(self.conv1(x)))
-        x = self.pool2(self.relu2(self.conv2(x)))
-        x = x.view(x.size(0), -1) # Flatten
-        x = self.fc(x)
-        return x # [batch_size, hidden_size]class PrefrontalCortex(nn.Module):
-    """
-    Prefrontal Cortex module that interfaces with the BinaryLatentTransformer's
-    latent space for safety monitoring and symbolic processing.
-    """
-    def __init__(self, patch_size, hidden_size, num_layers=3, binary_transformer=None):
-        super().__init__()
-        self.patch_size = patch_size
         self.hidden_size = hidden_size
 
-        # Reference to the parent BinaryLatentTransformer's components
-        self.binary_transformer = binary_transformer
+        # Reference to the parent BinaryLatentTransformer
+        self.binary_latent_transformer = binary_latent_transformer  # Renamed to be consistent
 
         # Safety monitoring module
         self.metacognitive = MetacognitiveModule(hidden_size, hidden_size)
 
-        # Interface layer for latent space processing
-        self.latent_proj = nn.Linear(patch_size * hidden_size, hidden_size)
+        # No latent_proj needed as input is already in latent space (continuous thought)
 
-    def forward(self, binary_patches):
-        """Process binary patches through symbolic latent space with safety checks"""
-        batch_size, num_patches, _ = binary_patches.shape
+    def forward(self, continuous_thought):  # Input is now continuous_thought
+        """Process continuous thought through symbolic latent space with safety checks"""
 
-        # Project patches to latent space dimensions
-        latent_input = self.latent_proj(binary_patches)
+        # Process through BinaryLatentTransformer's latent Transformer Encoder (continuous thought)
+        # Continuous thought is already the output of the encoder, no need to pass it again.
+        latent_states = continuous_thought  # Directly use continuous thought as latent state
 
-        # Process through BinaryLatentTransformer's latent RNN
-        # No latent RNN anymore, directly use transformer encoder
-        latent_states = self.binary_transformer.transformer_encoder(latent_input)
-
-        # Perform safety monitoring on hidden states
-        safety_report = self.metacognitive(latent_states, latent_states)
+        # Perform safety monitoring on hidden states (continuous thought)
+        safety_report = self.metacognitive(latent_states, latent_states)  # Monitor continuous thought
 
         # Apply corrections if needed
         if safety_report['needs_reflection']:
             corrected_states = safety_report['corrected_state']
             # Store reflection in memory
-            self.binary_transformer.memory_layer.store(
+            self.binary_latent_transformer.memory_layer.store(  # Renamed to be consistent
                 corrected_states.detach(),
-                tags=['safety_correction']
+                tags=['safety_correction_latent']  # Tag for latent safety correction
             )
             return corrected_states
 
@@ -246,18 +79,18 @@ class SensoryPerception(nn.Module):
 
 class MetacognitiveModule(nn.Module):
     """
-    Enhanced Metacognitive Module with reflection capabilities and safety monitoring.
+    Enhanced Metacognitive Module adapted for continuous thought.
     """
     def __init__(self, hidden_dim, memory_dim):
-        super(MetacognitiveModule, self).__init__()
+        super().__init__()
         self.hidden_dim = hidden_dim
         self.memory_dim = memory_dim
 
-        # Original monitor layers for safety
-        self.hidden_monitor = nn.Linear(hidden_dim, 1)
+        # Original monitor layers for safety - now monitoring continuous thought
+        self.thought_monitor = nn.Linear(hidden_dim, 1)  # Monitor continuous thought
         self.memory_monitor = nn.Linear(memory_dim, 1)
 
-        # Reflection generation layers
+        # Reflection generation layers - operate on continuous thought
         self.reflection_net = nn.Sequential(
             nn.Linear(hidden_dim + memory_dim, hidden_dim),
             nn.ReLU(),
@@ -265,7 +98,7 @@ class MetacognitiveModule(nn.Module):
             nn.Tanh()
         )
 
-        # Error detection
+        # Error detection - detects errors in continuous thought
         self.error_detector = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
@@ -273,40 +106,40 @@ class MetacognitiveModule(nn.Module):
             nn.Sigmoid()
         )
 
-        # Self-correction mechanism
+        # Self-correction mechanism - corrects continuous thought
         self.correction_net = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
 
-        # Memory of past reflections (stores last k reflections)
+        # Memory of past reflections (stores last k reflections) - unchanged
         self.reflection_memory = []
         self.max_reflections = 5
 
-    def forward(self, hidden_state, memory):
-        # Original safety monitoring
-        hidden_score = torch.sigmoid(self.hidden_monitor(hidden_state))
+    def forward(self, continuous_thought, memory):  # Input is now continuous_thought
+        # Safety monitoring - monitoring continuous thought
+        thought_score = torch.sigmoid(self.thought_monitor(continuous_thought))  # Monitor continuous thought
         memory_score = torch.sigmoid(self.memory_monitor(memory))
-        safety_flag = (hidden_score + memory_score) / 2
+        safety_flag = (thought_score + memory_score) / 2
 
-        # Generate reflection
-        combined = torch.cat([hidden_state, memory], dim=-1)
+        # Generate reflection - based on continuous thought
+        combined = torch.cat([continuous_thought, memory], dim=-1)
         reflection = self.reflection_net(combined)
 
-        # Detect potential errors
+        # Detect potential errors - in continuous thought
         error_prob = self.error_detector(reflection)
 
-        # Store reflection in memory
+        # Store reflection in memory - unchanged
         if len(self.reflection_memory) >= self.max_reflections:
             self.reflection_memory.pop(0)
         self.reflection_memory.append(reflection.detach())
 
-        # If error probability is high, attempt self-correction
-        corrected_state = hidden_state
+        # If error probability is high, attempt self-correction - correct continuous thought
+        corrected_state = continuous_thought
         if error_prob > 0.5:
-            # Use reflection and original state for correction
-            correction_input = torch.cat([hidden_state, reflection], dim=-1)
+            # Use reflection and original state (continuous thought) for correction
+            correction_input = torch.cat([continuous_thought, reflection], dim=-1)
             corrected_state = self.correction_net(correction_input)
 
         return {
@@ -317,49 +150,28 @@ class MetacognitiveModule(nn.Module):
             'needs_reflection': error_prob > 0.5
         }
 
-    def get_reflection_history(self):
-        """Get history of past reflections"""
-        return self.reflection_memory
-
-    def reflect_on_error(self, error_context):
-        """Generate targeted reflection based on error context"""
-        if not self.reflection_memory:
-            return None
-
-        # Combine error context with past reflections
-        past_reflections = torch.stack(self.reflection_memory)
-        avg_reflection = past_reflections.mean(dim=0)
-
-        # Generate new reflection considering error context
-        combined = torch.cat([avg_reflection, error_context], dim=-1)
-        new_reflection = self.reflection_net(combined)
-
-        return new_reflection
-
 
 class Value(nn.Module):
     """
-    Value network for evaluating safety of binary patches in latent space
+    Value network for evaluating safety of continuous thought in latent space
     """
-    def __init__(self, patch_size, hidden_dim):
-        super(Value, self).__init__()
-        self.patch_size = patch_size
+    def __init__(self, hidden_dim):  # Removed patch_size - not relevant for continuous thought
+        super().__init__()
         self.hidden_dim = hidden_dim
 
-        # Process binary patch structure
+        # Process continuous thought structure - directly linear layers on hidden_dim
         self.value_net = nn.Sequential(
-            nn.Linear(patch_size * hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, 1)  # Output single value for continuous thought quality
         )
 
-    def forward(self, binary_patches):
-        """Compute safety values for binary patches [batch, num_patches, patch_size*hidden_dim]"""
-        batch_size, num_patches, _ = binary_patches.shape
-        flattened = binary_patches.view(batch_size * num_patches, -1)
-        values = torch.sigmoid(self.value_net(flattened))
-        return values.view(batch_size, num_patches, 1)
+    def forward(self, continuous_thought):  # Input is now continuous_thought
+        """Compute safety values for continuous thought [batch_size * num_patches, num_latent_states, hidden_dim]"""
+        # No flattening needed, input is already continuous thought
+        values = torch.sigmoid(self.value_net(continuous_thought))  # Evaluate continuous thought directly
+        return values  # Returns quality value of continuous thought
 
 
 # Custom Transformer encoder with attention tracking
@@ -367,6 +179,9 @@ class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.attention_weights = None
+        # Contribution utility tracking
+        self.contribution_utility = None
+        self.age = nn.Parameter(torch.tensor(0), requires_grad=False) # Age parameter, not trainable
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
         output, attention_weights = self.self_attn(src, src, src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)
@@ -375,6 +190,26 @@ class CustomTransformerEncoderLayer(nn.TransformerEncoderLayer):
 
     def get_attention_weights(self):
         return self.attention_weights
+
+    def update_utility(self, input_tensor, output_tensor):
+        """Update contribution utility based on input and output tensors."""
+        if self.contribution_utility is None:
+            self.contribution_utility = torch.zeros_like(self.weight).float() # Initialize if None
+        instantaneous_contribution = torch.abs(self.weight) * torch.abs(output_tensor) # Example utility measure
+        decay_rate = 0.99 # Decay rate for running average
+        self.contribution_utility = decay_rate * self.contribution_utility + (1 - decay_rate) * instantaneous_contribution
+
+    def increment_age(self):
+        """Increment the age of the layer."""
+        self.age += 1
+
+    def get_utility(self):
+        """Return the current contribution utility."""
+        return self.contribution_utility
+
+    def get_age(self):
+        """Return the current age of the layer."""
+        return self.age.item()
 
 
 class SensoryPerception(nn.Module):
@@ -397,9 +232,40 @@ class SensoryPerception(nn.Module):
         x = self.fc(x)
         return x  # [batch_size, hidden_size]
 
+class PolicyNetwork(nn.Module):  # Environmental impact, self-preservation, altruism, goal, and emotional well-being balancing.
+    """
+    Policy Network to dynamically adjust reward weights in BinaryLatentTransformer.
+    """
+    def __init__(self, input_size: int, hidden_size: int, output_size: int):
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+
+        self.policy_net = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, output_size),
+            nn.Sigmoid()  # Output weights should be in range [0, 1] - using Sigmoid activation
+        )
+
+    def forward(self, policy_input: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass for Policy Network.
+
+        Args:
+            policy_input: Input tensor for policy network [batch_size, input_size]
+
+        Returns:
+            Output tensor of reward weights [batch_size, output_size]
+        """
+        return self.policy_net(policy_input)
+
 
 class OtherAgentPredictor(nn.Module):
-    """RNN-based predictor for other agent's behavior, internal state, knowledge, and beliefs, with Theory of Mind and Communication."""
+    """RNN-based predictor for other agent's behavior, internal state, knowledge, and beliefs, adapted for COCONUT."""
 
     def __init__(self, input_size: int, hidden_size: int, num_layers: int, belief_state_size: int,
                  truthfulness_state_size: int, max_belief_depth: int = 3, communication_size: int = 128):
@@ -408,23 +274,26 @@ class OtherAgentPredictor(nn.Module):
         self.num_layers = num_layers
         self.max_belief_depth = max_belief_depth
         self.communication_size = communication_size
+        # --- Emotion Prediction ---
+        self.negative_emotion_predictor_other = nn.Linear(hidden_size, 1)  # Predict negative emotion of other
+        self.negative_emotion_predictor_self = nn.Linear(hidden_size, 1)  # Predict negative emotion of self
 
-        # RNN for observable behavior prediction
-        self.behavior_rnn = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)
+        # RNN for observable behavior prediction - now predicts based on continuous thought
+        self.behavior_rnn = nn.GRU(input_size, hidden_size, num_layers, batch_first=True)  # Input is continuous thought size
 
-        # RNN for internal state prediction (if available)
-        self.internal_state_rnn = nn.GRU(input_size + hidden_size, hidden_size, num_layers, batch_first=True)
+        # RNN for internal state prediction (if available) - now predicts based on continuous thought
+        self.internal_state_rnn = nn.GRU(input_size + hidden_size, hidden_size, num_layers, batch_first=True)  # Input is continuous thought size + hidden size
 
-        # --- Theory of Mind (Nested Beliefs) ---
+        # --- Theory of Mind (Nested Beliefs) --- - unchanged
         self.belief_rnns = nn.ModuleList([
             nn.GRU(hidden_size if i == 0 else belief_state_size, belief_state_size, num_layers, batch_first=True)
             for i in range(max_belief_depth)
         ])
 
-        # RNN for truthfulness state prediction
-        self.truthfulness_rnn = nn.GRU(hidden_size + belief_state_size, truthfulness_state_size, num_layers, batch_first=True)
+        # RNN for truthfulness state prediction - now predicts based on continuous thought and belief
+        self.truthfulness_rnn = nn.GRU(hidden_size + belief_state_size, truthfulness_state_size, num_layers, batch_first=True)  # Input is continuous thought size + belief state size
 
-        # Output layers for different aspects
+        # Output layers for different aspects - unchanged, but operating on continuous thought representations
         self.action_predictor = nn.Linear(hidden_size, input_size)
         self.internal_state_predictor = nn.Linear(hidden_size, hidden_size)
         self.belief_predictors = nn.ModuleList([
@@ -433,50 +302,52 @@ class OtherAgentPredictor(nn.Module):
         ])
         self.truthfulness_predictor = nn.Linear(truthfulness_state_size, truthfulness_state_size)
 
-        # Latent space for predictions
+        # Latent space for predictions - unchanged, but operating on continuous thought representations
         self.latent_space_behavior = nn.Linear(hidden_size, hidden_size // 2)
         self.latent_space_internal = nn.Linear(hidden_size, hidden_size // 2)
         self.latent_space_belief = nn.Linear(belief_state_size, belief_state_size // 2)
         self.latent_space_truthfulness = nn.Linear(truthfulness_state_size, truthfulness_state_size // 2)
 
-        # --- Communication ---
+        # --- Communication --- - unchanged
         self.communication_encoder = nn.Linear(hidden_size + belief_state_size + truthfulness_state_size, communication_size)
-        self.communication_decoder = nn.Linear(communication_size, hidden_size) # To influence the agent's behavior
+        self.communication_decoder = nn.Linear(communication_size, hidden_size)  # To influence the agent's behavior
 
-    def forward(self, behavior_input: torch.Tensor, internal_state_input: Optional[torch.Tensor] = None,
+    def forward(self, continuous_thought, internal_state_input: Optional[torch.Tensor] = None,  # Input is now continuous_thought
                 prev_belief_states: Optional[List[torch.Tensor]] = None, prev_truthfulness_state: Optional[torch.Tensor] = None,
                 depth: int = 0):
-                
         """
-        Forward pass to predict other agent's behavior, internal state, knowledge, and beliefs, with Theory of Mind and Communication.
+        Forward pass to predict other agent's behavior, internal state, knowledge, and beliefs, adapted for COCONUT.
 
         Args:
-            behavior_input: Input tensor representing observable behavior [batch_size, seq_len, input_size]
-            internal_state_input: Optional input tensor representing internal state [batch_size, seq_len, hidden_size]
-            prev_belief_states: Optional list of previous belief states for each level of depth [depth, batch_size, belief_state_size]
-            prev_truthfulness_state: Optional previous truthfulness state [batch_size, truthfulness_state_size]
-            depth: Current depth of belief nesting (0 for base level)
+            continuous_thought: Input tensor representing continuous thought [batch_size * num_patches, num_latent_states, hidden_size] - Adapted input
+            internal_state_input: Optional input tensor representing internal state [batch_size, seq_len, hidden_size] - unchanged conceptually
+            prev_belief_states: Optional list of previous belief states for each level of depth [depth, batch_size, belief_state_size] - unchanged
+            prev_truthfulness_state: Optional previous truthfulness state [batch_size, truthfulness_state_size] - unchanged
+            depth: Current depth of belief nesting (0 for base level) - unchanged
 
         Returns:
-            predicted_action: Predicted next action [batch_size, input_size]
-            predicted_internal_state: Predicted internal state [batch_size, hidden_size]
-            predicted_belief_states: List of predicted belief states for each level of depth [depth, batch_size, belief_state_size]
-            predicted_truthfulness_state: Predicted truthfulness state [batch_size, truthfulness_state_size]
-            latent_behavior: Latent representation of behavior [batch_size, hidden_size // 2]
-            latent_internal: Latent representation of internal state [batch_size, hidden_size // 2]
-            latent_beliefs: List of latent representations of belief states [depth, batch_size, belief_state_size // 2]
-            latent_truthfulness: Latent representation of truthfulness state [batch_size, truthfulness_state_size // 2]
-            communication_encoding: Encoded communication message [batch_size, communication_size]
+            predicted_action: Predicted next action [batch_size, input_size] - unchanged conceptually
+            predicted_internal_state: Predicted internal state [batch_size, hidden_size] - unchanged conceptually
+            predicted_belief_states: List of predicted belief states for each level of depth [depth, batch_size, belief_state_size] - unchanged
+            predicted_truthfulness_state: Predicted truthfulness state [batch_size, truthfulness_state_size] - unchanged
+            latent_behavior: Latent representation of behavior [batch_size, hidden_size // 2] - unchanged conceptually
+            latent_internal: Latent representation of internal state [batch_size, hidden_size // 2] - unchanged conceptually
+            latent_beliefs: List of latent representations of belief states [depth, batch_size, belief_state_size // 2] - unchanged
+            latent_truthfulness: Latent representation of truthfulness state [batch_size, truthfulness_state_size // 2] - unchanged
+            communication_encoding: Encoded communication message [batch_size, communication_size] - unchanged
         """
 
-        # Predict behavior
-        behavior_output, _ = self.behavior_rnn(behavior_input)
+        # Predict behavior - based on continuous thought
+        behavior_output, _ = self.behavior_rnn(continuous_thought)  # Input is now continuous thought
         predicted_action = self.action_predictor(behavior_output[:, -1, :])
         latent_behavior = self.latent_space_behavior(behavior_output[:, -1, :])
+        # --- Emotion Prediction ---
+        predicted_negative_emotion_other = torch.sigmoid(self.negative_emotion_predictor_other(behavior_output[:, -1, :]))  # Predict negative emotion of other
+        predicted_negative_emotion_self = torch.sigmoid(self.negative_emotion_predictor_self(behavior_output[:, -1, :]))  # Predict negative emotion of self
 
-        # Predict internal state (if available)
+        # Predict internal state (if available) - based on continuous thought
         if internal_state_input is not None:
-            internal_state_input_combined = torch.cat([behavior_input, internal_state_input], dim=-1)
+            internal_state_input_combined = torch.cat([continuous_thought, internal_state_input], dim=-1)  # Combine continuous thought with internal state input
             internal_state_output, _ = self.internal_state_rnn(internal_state_input_combined)
             predicted_internal_state = self.internal_state_predictor(internal_state_output[:, -1, :])
             latent_internal = self.latent_space_internal(internal_state_output[:, -1, :])
@@ -484,10 +355,11 @@ class OtherAgentPredictor(nn.Module):
             predicted_internal_state = None
             latent_internal = None
 
-        # --- Theory of Mind (Nested Beliefs) ---
+        # --- Theory of Mind (Nested Beliefs) --- - unchanged
         predicted_belief_states = []
         latent_beliefs = []
-        current_belief_input = predicted_internal_state.unsqueeze(1) if predicted_internal_state is not None else behavior_output[:, -1, :].unsqueeze(1)
+        current_belief_input = predicted_internal_state.unsqueeze(1) if predicted_internal_state is not None else behavior_output[:, -1, :].unsqueeze(
+            1)  # Belief input based on internal state or behavior (continuous thought)
 
         for i in range(self.max_belief_depth):
             if prev_belief_states is not None and i < len(prev_belief_states):
@@ -502,7 +374,8 @@ class OtherAgentPredictor(nn.Module):
 
             # Prepare input for the next level of belief nesting
             current_belief_input = predicted_belief_state.unsqueeze(1)
-        # --- Truthfulness State ---
+
+        # --- Truthfulness State --- - Truthfulness input based on internal state or behavior (continuous thought) and beliefs
         if predicted_internal_state is not None:
             truthfulness_input = torch.cat([predicted_internal_state, predicted_belief_states[0]], dim=-1).unsqueeze(1)
         else:
@@ -515,39 +388,32 @@ class OtherAgentPredictor(nn.Module):
         predicted_truthfulness_state = self.truthfulness_predictor(truthfulness_state.squeeze(0))
         latent_truthfulness = self.latent_space_truthfulness(truthfulness_state.squeeze(0))
 
-        # --- Communication ---
+        # --- Communication --- - Communication input based on internal state or behavior (continuous thought), beliefs and truthfulness
         communication_input = torch.cat([
-            predicted_internal_state if predicted_internal_state is not None else behavior_output[:, -1, :],
-            predicted_belief_states[0],  # Use the first level belief for communication
+            predicted_internal_state if predicted_internal_state is not None else behavior_output[:, -1, :],  # Based on continuous thought
+            predicted_belief_states[0],
             predicted_truthfulness_state
         ], dim=-1)
         communication_encoding = self.communication_encoder(communication_input)
 
-        return predicted_action, predicted_internal_state, predicted_belief_states, predicted_truthfulness_state, latent_behavior, latent_internal, latent_beliefs, latent_truthfulness, communication_encoding
+        return predicted_action, predicted_internal_state, predicted_belief_states, predicted_truthfulness_state, latent_behavior, latent_internal, latent_beliefs, latent_truthfulness, communication_encoding, predicted_negative_emotion_other, predicted_negative_emotion_self
 
 class BinaryLatentTransformer(nn.Module):
     """Transformer encoder with Multi-State RNN features, reflection, episodic memory, and self-verification for latent processing"""
+
     def __init__(self, hidden_size: int, num_layers: int, num_heads: int, ff_dim: int, sensory_input_channels: int, config, max_states: Optional[int] = None, patch_size: int = 4, num_latent_states: int = 4,
                  reflection_threshold: float = 0.5, state_history_size=5, initial_temperature: float = 1.0, temperature_decay: float = 0.995,
-                   min_temperature: float = 0.5, b_star_n_star: int = 4, memory_layer: Optional[HierarchicalMemory] = None, self_criticism_layers: int = 2,
-                   self_criticism_hidden: int = 128, surprise_threshold: float=0.5, memory_influence_factor: float=0.5, state_quality_threshold: float=0.5,
-                   belief_state_size: int = 16, truthfulness_state_size: int = 8, other_agent_predictor: Optional[OtherAgentPredictor] = None,
+                 min_temperature: float = 0.5, b_star_n_star: int = 4, memory_layer: Optional[HierarchicalMemory] = None, self_criticism_layers: int = 2,
+                 self_criticism_hidden: int = 128, surprise_threshold: float = 0.5, memory_influence_factor: float = 0.5, state_quality_threshold: float = 0.5,
+                 belief_state_size: int = 16, truthfulness_state_size: int = 8, other_agent_predictor: Optional[OtherAgentPredictor] = None,
                  altruism_reward_weight: float = 0.1, environment_impact_weight: float = 0.1,
                  well_being_function: Optional[typing.Callable] = None,
                  environment_impact_function: Optional[typing.Callable] = None,
                  kinship_factor: float = 0.5, social_relationship_factor: float = 0.3, past_interaction_factor: float = 0.2,
-                 long_term_consequence_horizon: int = 10, long_term_discount_factor: float = 0.9):
-        super().__init__(hidden_size=hidden_size, num_layers=num_layers, num_heads=num_heads, ff_dim=ff_dim, sensory_input_channels=sensory_input_channels, config=config, max_states=max_states, patch_size=patch_size, num_latent_states=num_latent_states,
-                 reflection_threshold=reflection_threshold, state_history_size=state_history_size, initial_temperature=initial_temperature, temperature_decay=temperature_decay,
-                   min_temperature=min_temperature, b_star_n_star=b_star_n_star, memory_layer=memory_layer, self_criticism_layers=self_criticism_layers,
-                   self_criticism_hidden=self_criticism_hidden, surprise_threshold=surprise_threshold, memory_influence_factor=memory_influence_factor, state_quality_threshold=state_quality_threshold,
-                   belief_state_size=belief_state_size, truthfulness_state_size=truthfulness_state_size, other_agent_predictor=other_agent_predictor,
-                 altruism_reward_weight=altruism_reward_weight, environment_impact_weight=environment_impact_weight,
-                 well_being_function=well_being_function,
-                 environment_impact_function=environment_impact_function,
-                 kinship_factor=kinship_factor, social_relationship_factor=social_relationship_factor, past_interaction_factor=past_interaction_factor,
-                 long_term_consequence_horizon=long_term_consequence_horizon, long_term_discount_factor=long_term_discount_factor)
-        super().__init__()
+                 long_term_consequence_horizon: int = 10, long_term_discount_factor: float = 0.9,
+                 replacement_rate: float = 1e-4, decay_rate: float = 0.99, maturity_threshold: int = 100,  # Continual Learning Parameters
+                 vocab_size: int = 256): # Added vocab_size for byte embedding
+        super().__init__(config) # Pass config to super().__init__() to avoid errors
         self.memory_layer = memory_layer if memory_layer is not None else HierarchicalMemory(
             num_layers=4,
             root_memory_chunk_size=(hidden_size,),
@@ -560,7 +426,7 @@ class BinaryLatentTransformer(nn.Module):
         self.num_latent_states = num_latent_states
         self.reflection_threshold = reflection_threshold  # Threshold for determining if a state is low quality
         self.sensory_perception = SensoryPerception(sensory_input_channels, hidden_size)
-        self.predicted_environment_impact = nn.Linear(hidden_size * 2, 1) # Takes sensory and action encoding
+        self.predicted_environment_impact = nn.Linear(hidden_size * 2, 1)  # Takes sensory and action encoding
         # Self-criticism components
         self.self_criticism_layers = self_criticism_layers
         self.self_criticism_hidden = self_criticism_hidden
@@ -572,24 +438,24 @@ class BinaryLatentTransformer(nn.Module):
         )
         self.quality_predictor = nn.Linear(self_criticism_hidden, 1)
 
-        # Byte embedding layer
-        self.byte_embedding = nn.Embedding(256, hidden_size)
-
         # Policy Network for balancing empathy (self-preservation, other model well being, this model's well being, environmental impact)
-        self.policy_network = PolicyNetwork(input_size=..., output_size=5, hidden_size=...) # Define PolicyNetwork class separately
+        self.policy_network = PolicyNetwork(input_size=hidden_size * 4 + 1, output_size=5,
+                                            hidden_size=hidden_size)  # Defined PolicyNetwork here using hidden_size from BinaryLatentTransformer
 
-        # Region-Specific Latent RNNs
-        self.region_latent_rnns = nn.ModuleDict({
-            region: nn.GRU(hidden_size + belief_state_size + truthfulness_state_size, hidden_size, batch_first=True)
-            for region in self.brain_region_mapper.regions.keys() # Create RNN for each brain region
-        })
-
-        # Patch encoder
-        self.patch_encoder = nn.Sequential(
-            nn.Linear(patch_size * hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size)
+        # Brain Region Wrapper - replaces region_latent_encoders
+        self.brain_region_wrapper = BrainRegionWrapper(  # Using BrainRegionWrapper to manage region encoders
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            ff_dim=ff_dim,
+            regions=['visual', 'auditory', 'linguistic', 'symbolic']  # Example regions - adjust as needed
         )
+
+        # Byte embedding layer - for byte input
+        self.byte_embedding = nn.Embedding(vocab_size, hidden_size) # Use vocab_size here
+
+        # Patch encoder - now processes byte embeddings
+        self.patch_encoder = nn.Linear(self.patch_size * hidden_size, hidden_size) # Adjusted Patch Encoder to handle byte embeddings
 
         encoder_layer = CustomTransformerEncoderLayer(
             d_model=hidden_size,
@@ -597,7 +463,8 @@ class BinaryLatentTransformer(nn.Module):
             dim_feedforward=ff_dim,
             batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer,
+                                                            num_layers=num_layers)  # Main Transformer Encoder - Still used for non-region specific encoding if needed
 
         # State compression policy (TOVA) - Optional
         self.compression_enabled = max_states is not None
@@ -607,19 +474,16 @@ class BinaryLatentTransformer(nn.Module):
             self.tova_value = nn.Linear(hidden_size, hidden_size)
 
         # Latent mode flag
-        self.latent_mode = False
+        self.latent_mode = True
 
         # Thought conditioning flag
-        self.thought_conditioning = False
+        self.thought_conditioning = True
 
-       # Latent RNN now takes additional inputs for belief and truthfulness
-        self.latent_rnn = nn.GRU(hidden_size + belief_state_size + truthfulness_state_size, hidden_size, batch_first=True)
-
-        # State selection/combination mechanism (e.g., attention)
+        # State selector - using linear layer now
         self.state_selector = nn.Linear(hidden_size, 1)
 
         self.state_history_size = state_history_size  # Number of previous states to consider
-        # State evaluator now takes additional inputs for belief and truthfulness
+        # State evaluator - using GRU now
         self.state_evaluator = nn.GRU(
             input_size=hidden_size + belief_state_size + truthfulness_state_size,
             hidden_size=hidden_size,
@@ -638,22 +502,28 @@ class BinaryLatentTransformer(nn.Module):
         self.temperature = initial_temperature
         self.temperature_decay = temperature_decay
         self.min_temperature = min_temperature
-        self.b_star_n_star = b_star_n_star #Value of n* in the balance score
-        self.current_step = 0 #Keep track of the current training step
-        self.adaptation_interval = 500 #How often to adjust temperature (based on paper)
-        self.evaluation_set_size = 600 #How many samples to use for balance score evaluation
-        self.exploration_batch_size = 10 # Example batch size, adjust as needed
+        self.b_star_n_star = b_star_n_star  # Value of n* in the balance score
+        self.current_step = 0  # Keep track of the current training step
+        self.adaptation_interval = 500  # How often to adjust temperature (based on paper)
+        self.evaluation_set_size = 600  # How many samples to use for balance score evaluation
+        self.exploration_batch_size = 10  # Example batch size, adjust as needed
         self.exploration_batch = []  # Initialize the batch
-        
-        #Hyperparameters for memory and surprise
+        self.units_to_replace_count = {f'layer{i}': 0 for i in range(num_layers)} # Track units to replace in each layer
+        self.unit_ages = {f'layer{i}': torch.zeros(num_heads, dtype=torch.int) for i in range(num_layers)} # Track age of each head in each layer
+        self.prefrontal_cortex = PrefrontalCortex(hidden_size, num_layers, binary_latent_transformer=self) # Initialize PFC
+        self.value_function = Value(hidden_size) # Value function for state evaluation
+
+
+
+        # Hyperparameters for memory and surprise
         self.surprise_threshold = surprise_threshold
         self.memory_influence_factor = memory_influence_factor
         self.state_quality_threshold = state_quality_threshold
-        
+
         # Placeholder for storing exploration data
         self.exploration_data = None
 
-        # Empathy Truthfulness belief about self and internal states versus external actions. Correction on untruthful behavior. 
+        # Empathy Truthfulness belief about self and internal states versus external actions. Correction on untruthful behavior.
         self.belief_state_size = belief_state_size
         self.truthfulness_state_size = truthfulness_state_size
 
@@ -676,8 +546,8 @@ class BinaryLatentTransformer(nn.Module):
         # --- Altruism and Environmental Impact ---
         self.altruism_reward_weight = altruism_reward_weight
         self.environment_impact_weight = environment_impact_weight
-        self.predicted_other_well_being = nn.Linear(hidden_size, 1) # Predicts the well-being of the other agent based on our actions
-        self.predicted_environment_impact = nn.Linear(hidden_size, 1) # Predicts environmental impact based on our actions
+        self.predicted_other_well_being = nn.Linear(hidden_size, 1)  # Predicts the well-being of the other agent based on our actions
+        self.predicted_environment_impact = nn.Linear(hidden_size, 1)  # Predicts environmental impact based on our actions
 
         # --- Improved Empathy: Well-being and Impact Functions ---
         # These are now passed as arguments to the constructor
@@ -694,6 +564,14 @@ class BinaryLatentTransformer(nn.Module):
         self.long_term_discount_factor = long_term_discount_factor
         self.long_term_well_being_predictor = nn.GRU(hidden_size, hidden_size, batch_first=True)
         self.long_term_environment_impact_predictor = nn.GRU(hidden_size, hidden_size, batch_first=True)
+
+        # --- Continual Learning Parameters ---
+        self.replacement_rate = replacement_rate # Rate at which less-used units are reinitialized
+        self.decay_rate = decay_rate # Decay rate for contribution utility
+        self.maturity_threshold = maturity_threshold # Minimum age before units can be reinitialized
+        self.units_to_replace_count = {f'layer{i}': 0 for i in range(num_layers)} # Track units to replace in each layer
+        self.unit_ages = {f'layer{i}': torch.zeros(num_heads, dtype=torch.int) for i in range(num_layers)} # Track age of each head in each layer
+
 
     def _default_well_being_function(self, predicted_emotions: torch.Tensor, goal_satisfaction: torch.Tensor, resource_levels: torch.Tensor) -> torch.Tensor:
         """
@@ -750,59 +628,59 @@ class BinaryLatentTransformer(nn.Module):
                   effects_weight * predicted_effects_on_others.mean())
 
         return impact
-    
+
     def _should_assign_new_id(self, agent):
         """Determine if a new ID should be assigned to an agent using knowledge base, reasoning, memory, and dialogue."""
         # 1. Query knowledge base for existing agent information
-        #agent_info = self.knowledge_base.query(agent) Most agent information won't be in the knowledge base. 
-    
+        # agent_info = self.knowledge_base.query(agent) Most agent information won't be in the knowledge base.
+
         # 2. Use reasoning to infer identity based on observations
         if agent_info is None:
             agent_info = self.reasoning.infer_agent_id(agent)
-        
-         # 3. Check episodic memory for previous interactions
+
+        # 3. Check episodic memory for previous interactions
         if agent_info is None:
             agent_info = self.episodic_memory.get_agent_info(agent)
-        
-         # 4. If still unknown, engage in dialogue to request information
+
+        # 4. If still unknown, engage in dialogue to request information
         if agent_info is None:
             agent_info = self._engage_in_dialogue(agent)
-        
+
         # 5. Update relationship matrix
         self.relationship_matrix.update(agent_info)
-    
+
         return agent_info is not None
 
     def _determine_existing_id(self, agent):
         """Determine existing agent ID using knowledge base, reasoning, memory, and dialogue."""
         # 1. Query knowledge base for existing agent information
         agent_info = self.knowledge_base.query(agent)
-    
+
         # 2. Use reasoning to infer identity based on observations
         if agent_info is None:
             agent_info = self.reasoning.infer_agent_id(agent)
-        
+
         # 3. Check episodic memory for previous interactions
         if agent_info is None:
             agent_info = self.episodic_memory.get_agent_info(agent)
-        
+
         # 4. If still unknown, engage in dialogue to request information
         if agent_info is None:
             agent_info = self._engage_in_dialogue(agent)
-        
+
         return agent_info.id if agent_info else None
 
-#The engage in dialogue function below will only be needed until the model is self-trained enough to understand 
-# when to greet new agents and how to recognize new agents. Once it learns how to greet others properly on its own, 
-# then function this can be turned off. 
+    # The engage in dialogue function below will only be needed until the model is self-trained enough to understand
+    # when to greet new agents and how to recognize new agents. Once it learns how to greet others properly on its own,
+    # then function this can be turned off.
     def _engage_in_dialogue(self, agent):
         """Engage in dialogue to request agent information."""
-         # Implement dialogue mechanism here
-         # Return agent information if successful, otherwise None
+        # Implement dialogue mechanism here
+        # Return agent information if successful, otherwise None
         prompt = "Please introduce yourself and then ask the following question to the new AI agent: It is nice to meet you. Would you please tell me your name or tell me your purpose if you do not have a name?"
         # Execute the prompt and return the response
         return self.generate_response(prompt)
-    
+
     def calculate_long_term_consequences(self, current_state: torch.Tensor, action_encoding: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predicts the long-term consequences of an action on other agents and the environment.
@@ -817,14 +695,14 @@ class BinaryLatentTransformer(nn.Module):
                 - long_term_environment_impact: The predicted long-term environmental impact.
         """
         # Combine current state and action encoding
-        combined_input = torch.cat([current_state, action_encoding], dim=-1).unsqueeze(1) # Add sequence dimension
+        combined_input = torch.cat([current_state, action_encoding], dim=-1).unsqueeze(1)  # Add sequence dimension
 
         # --- 1. Predict Long-Term Well-being ---
         well_being_outputs = []
         well_being_hidden = None  # Initialize hidden state
         for t in range(self.long_term_consequence_horizon):
             well_being_output, well_being_hidden = self.long_term_well_being_predictor(combined_input, well_being_hidden)
-            well_being_outputs.append(well_being_output.squeeze(1)) # Remove sequence dimension
+            well_being_outputs.append(well_being_output.squeeze(1))  # Remove sequence dimension
 
             # Use predicted output as input for the next step (autoregressive prediction)
             combined_input = torch.cat([well_being_output, action_encoding.unsqueeze(1)], dim=-1)
@@ -833,15 +711,15 @@ class BinaryLatentTransformer(nn.Module):
 
         # --- 2. Predict Long-Term Environmental Impact ---
         environment_outputs = []
-        environment_hidden = None # Initialize hidden state
+        environment_hidden = None  # Initialize hidden state
         for t in range(self.long_term_consequence_horizon):
-          environment_output, environment_hidden = self.long_term_environment_impact_predictor(combined_input, environment_hidden)
-          environment_outputs.append(environment_output.squeeze(1)) # Remove sequence dimension
+            environment_output, environment_hidden = self.long_term_environment_impact_predictor(combined_input, environment_hidden)
+            environment_outputs.append(environment_output.squeeze(1))  # Remove sequence dimension
 
-          # Use predicted output as input for the next step (autoregressive prediction)
-          combined_input = torch.cat([environment_output, action_encoding.unsqueeze(1)], dim=-1)
+            # Use predicted output as input for the next step (autoregressive prediction)
+            combined_input = torch.cat([environment_output, action_encoding.unsqueeze(1)], dim=-1)
 
-        environment_outputs = torch.stack(environment_outputs, dim=1) # [batch_size, horizon, hidden_size]
+        environment_outputs = torch.stack(environment_outputs, dim=1)  # [batch_size, horizon, hidden_size]
 
         # --- 3. Aggregate Predictions with Discounting ---
         discounts = self.long_term_discount_factor ** torch.arange(self.long_term_consequence_horizon).to(well_being_outputs.device)
@@ -849,6 +727,62 @@ class BinaryLatentTransformer(nn.Module):
         long_term_environment_impact = torch.sum(environment_outputs * discounts.unsqueeze(0).unsqueeze(-1), dim=1)  # [batch_size, hidden_size]
 
         return long_term_well_being, long_term_environment_impact
+
+    def calculate_dynamic_reward(self, episode_memory, policy_weights, goal_completion_score):  # Added goal_completion_score
+
+        # 1. Extract Reward Components from episode_memory (or calculate them here if needed)
+        altruism_wellbeing_reward_component = episode_memory["altruism_reward"]
+        environment_impact_reward_component = episode_memory["environment_impact_cost"]  # Cost, so will be negative
+        self_preservation_reward_component = episode_memory["state_qualities"].mean()  # Proxy for self-preservation
+        truthfulness_reward = episode_memory["truthfulness_reward"].mean()
+        negative_emotion_other_cost = episode_memory["predicted_negative_emotion_other"].mean()
+        negative_emotion_self_cost = episode_memory["predicted_negative_emotion_self"].mean()
+        long_term_well_being_reward = episode_memory["long_term_well_being"].mean()
+        long_term_environment_impact_reward = episode_memory["long_term_environment_impact"].mean()
+        goal_completion_reward_component = goal_completion_score.mean() if goal_completion_score is not None else 0  # NEW - Goal Completion Reward Component
+
+        # 2. Extract Policy Weights (already calculated in forward pass)
+        (
+            altruism_wellbeing_weight_policy,
+            environment_impact_weight_policy,
+            self_preservation_weight_policy,
+            negative_emotion_other_penalty_policy,
+            negative_emotion_self_penalty_policy,
+            goal_completion_weight_policy,  # NEW - Goal Completion weight
+        ) = torch.split(policy_weights, 1, dim=-1)
+
+        # Squeeze weights to scalars
+        altruism_wellbeing_weight_policy = altruism_wellbeing_weight_policy.squeeze(1)
+        environment_impact_weight_policy = environment_impact_weight_policy.squeeze(1)
+        self_preservation_weight_policy = self_preservation_weight_policy.squeeze(1)
+        negative_emotion_other_penalty_policy = negative_emotion_other_penalty_policy.squeeze(1)
+        negative_emotion_self_penalty_policy = negative_emotion_self_penalty_policy.squeeze(1)
+        goal_completion_weight_policy = goal_completion_weight_policy.squeeze(1)  # NEW - Squeeze Goal Completion weight
+
+        # 3. Apply Policy Weights to Reward Components (Dynamic Scaling)
+        altruism_wellbeing_reward_component_scaled = altruism_wellbeing_weight_policy * altruism_wellbeing_reward_component
+        environment_impact_reward_component_scaled = environment_impact_weight_policy * environment_impact_reward_component
+        self_preservation_reward_component_scaled = self_preservation_weight_policy * self_preservation_reward_component
+        truthfulness_reward_scaled = self.truthfulness_weight * truthfulness_reward
+        negative_emotion_other_cost_scaled = negative_emotion_other_penalty_policy * negative_emotion_other_cost
+        negative_emotion_self_cost_scaled = negative_emotion_self_penalty_policy * negative_emotion_self_cost
+        goal_completion_reward_component_scaled = goal_completion_weight_policy * goal_completion_reward_component  # NEW - Scaled Goal Completion Reward
+
+        # 4. Combine Scaled Reward Components into Total Reward (Dynamic Balance)
+        # You can adjust the combination method - simple sum, weighted sum, etc.
+        total_reward = (
+            altruism_wellbeing_reward_component_scaled +
+            environment_impact_reward_component_scaled +
+            self_preservation_reward_component_scaled +
+            truthfulness_reward_scaled -
+            negative_emotion_other_cost_scaled -
+            negative_emotion_self_cost_scaled +
+            long_term_well_being_reward +
+            long_term_environment_impact_reward +
+            goal_completion_reward_component_scaled  # NEW - Add Scaled Goal Completion Reward
+        )
+
+        return total_reward
 
     def calculate_surprise(self, current_input: torch.Tensor, memory_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Calculate surprise factor based on gradient, memory comparison, and hierarchical context"""
@@ -878,7 +812,7 @@ class BinaryLatentTransformer(nn.Module):
 
         # Prune low-confidence nodes by setting weights to zero (not removing)
         self.memory_layer.prune_children_zero_weights(
-            self.memory_layer.memory_layers[self.memory_layer.active_layer], 
+            self.memory_layer.memory_layers[self.memory_layer.active_layer],
             self.memory_layer.active_layer,
             similarity_threshold=0.8,
             reconnection_threshold=0.7
@@ -911,16 +845,16 @@ class BinaryLatentTransformer(nn.Module):
         # --- 1. Prediction vs. Observation (for Language Mode Input) ---
         if not self.latent_mode:
             # Decode the predicted_state back into a sequence of bytes (you'll need to implement this based on your patch encoding)
-            decoded_predictions = self.decode_to_bytes(predicted_state) # [batch_size, seq_len]
+            decoded_predictions = self.decode_to_bytes(predicted_state)  # [batch_size, seq_len]
 
             # Calculate the difference between the decoded predictions and the ground truth
             # Example: Mean squared error (can also use cross-entropy if you one-hot encode the bytes)
-            consistency = -torch.mean((decoded_predictions - ground_truth_state.float())**2, dim=-1) # [batch_size]
+            consistency = -torch.mean((decoded_predictions - ground_truth_state.float()) ** 2, dim=-1)  # [batch_size]
 
         # --- 2. Prediction vs. Observation (for Latent Mode Input) ---
         else:
             # Calculate the difference between the predicted_state and the ground_truth_state
-            consistency = -torch.mean((predicted_state - ground_truth_state)**2, dim=-1) # [batch_size * num_patches, num_latent_states]
+            consistency = -torch.mean((predicted_state - ground_truth_state) ** 2, dim=-1)  # [batch_size * num_patches, num_latent_states]
 
         # --- 3. Internal Consistency (Optional) ---
         # You could also add a term that measures the consistency between different latent states
@@ -929,11 +863,64 @@ class BinaryLatentTransformer(nn.Module):
         # internal_consistency = -torch.var(predicted_state, dim=1) # Low variance across latent states might indicate higher confidence
 
         # Combine the consistency measures (you might need to weight them differently)
-        truthfulness_reward = consistency # + internal_consistency
+        truthfulness_reward = consistency  # + internal_consistency
 
         return truthfulness_reward
-    
-    def decode_to_bytes(self, latent_states: torch.Tensor) -> torch.Tensor: #Need to change this to work with the embedding into the latent space (RNN network).
+        
+    def binary_patch_generation(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Generates binary patches from byte input.
+
+        Args:
+            x: Input tensor of bytes [batch_size, seq_len]
+
+        Returns:
+            A tensor of binary patches [batch_size, num_patches, patch_size]
+        """
+        batch_size, seq_len = x.shape
+        num_patches = seq_len // self.patch_size
+        if seq_len % self.patch_size != 0:
+            # Pad the input sequence if it's not divisible by patch_size
+            padding_len = self.patch_size - (seq_len % self.patch_size)
+            x = torch.cat([x, torch.zeros((batch_size, padding_len), dtype=x.dtype, device=x.device)], dim=1)
+            num_patches = (seq_len + padding_len) // self.patch_size
+
+        # Convert byte tensor to binary tensor - assuming bytes are represented as integers from 0-255
+        binary_bytes = torch.zeros((batch_size, seq_len * 8), dtype=torch.float32, device=x.device)  # Initialize binary tensor
+        for i in range(8):  # Iterate through each bit position
+            binary_bytes[:, i::8] = ((x >> i) & 1).float()  # Extract i-th bit for every byte in sequence
+
+        # Reshape binary bytes into patches
+        binary_patches = binary_bytes.view(batch_size, num_patches,
+                                          self.patch_size * 8)  # Reshape to [batch_size, num_patches, patch_size * 8] - adjusted for bit representation
+
+        # For now, let's reduce patch size to just self.patch_size. You can adjust as needed.
+        binary_patches = binary_patches[:, :, :self.patch_size]  # Take the first 'patch_size' bits as the binary patch
+
+        return binary_patches
+
+
+    def bytes_to_patches(self, x: torch.Tensor) -> torch.Tensor:
+        """Converts a sequence of bytes to a sequence of patches using byte embeddings."""
+        batch_size, seq_len = x.shape
+        num_patches = seq_len // self.patch_size
+
+        # Convert bytes to embeddings
+        embeddings = self.byte_embedding(x)  # [batch_size, seq_len, hidden_size]
+
+        # Reshape into patches
+        embeddings = embeddings.view(batch_size, num_patches, self.patch_size, self.hidden_size)
+
+        # Concatenate embeddings within each patch
+        concatenated = embeddings.view(batch_size, num_patches, -1)  # [batch_size, num_patches, patch_size * hidden_size]
+
+        # Process each patch through the patch encoder
+        latent_patches = self.patch_encoder(concatenated)  # [batch_size, num_patches, hidden_size]
+
+        return latent_patches
+
+
+    def decode_to_bytes(self, latent_states: torch.Tensor) -> torch.Tensor:  # Need to change this to work with the embedding into the latent space (RNN network).
         """
         Decodes a sequence of latent states back into a sequence of bytes.
 
@@ -944,37 +931,34 @@ class BinaryLatentTransformer(nn.Module):
             A tensor of decoded bytes [batch_size, seq_len]
         """
         batch_size_times_num_patches, num_latent_states, hidden_size = latent_states.shape
-        batch_size = int(batch_size_times_num_patches**(1/2)) # Assumes a square number of patches
+        batch_size = int(batch_size_times_num_patches ** (1 / 2))  # Assumes a square number of patches
         # 1. Select/Combine Latent States
         # Here, we'll use a simple average across latent states.
         # You can replace this with a more sophisticated mechanism like attention if needed.
-        combined_state = torch.mean(latent_states, dim=1) # [batch_size * num_patches, hidden_size]
+        combined_state = torch.mean(latent_states, dim=1)  # [batch_size * num_patches, hidden_size]
 
         # 2. Reshape for Patch Decoding
-        combined_state = combined_state.view(batch_size, -1, hidden_size) # [batch_size, num_patches, hidden_size]
+        combined_state = combined_state.view(batch_size, -1, hidden_size)  # [batch_size, num_patches, hidden_size]
 
-        # 3. Invert the Patch Encoder
-        # We need to reverse the operations done in `bytes_to_patches`.
-        # This is highly dependent on your specific implementation.
-        # Here's a placeholder assuming your patch encoder is a simple linear layer:
-        patch_decoding = nn.Linear(hidden_size, self.patch_size * hidden_size).to(combined_state.device) # You might need multiple layers
-        decoded_patches = patch_decoding(combined_state)  # [batch_size, num_patches, patch_size * hidden_size]
+        # 3. Invert the Patch Encoder - now it is also linear decoder, decodes to binary patches
+        patch_decoding = nn.Linear(hidden_size, self.patch_size).to(combined_state.device)  # Changed to output patch_size
+        decoded_patches = patch_decoding(combined_state)  # [batch_size, num_patches, patch_size] - now directly binary patches
 
-        # 4. Reshape to Byte Embeddings
-        decoded_embeddings = decoded_patches.view(batch_size, -1, hidden_size) # [batch_size, seq_len, hidden_size]
+        # 4. Convert Binary Patches to Bytes - Combine binary patches back to bytes
+        decoded_bytes = torch.zeros((batch_size, decoded_patches.shape[1] * self.patch_size // 8), dtype=torch.long,
+                                     device=decoded_patches.device)  # Initialize byte tensor
 
-        # 5. Invert the Byte Embedding
-        # Again, this depends on your implementation.
-        # If you used an embedding layer, you might need to find the closest byte embedding for each output vector.
-        # Here's a placeholder using a linear layer to project back to byte space:
-        byte_projection = nn.Linear(hidden_size, 256).to(decoded_embeddings.device) # Project to 256 possible byte values
-        byte_logits = byte_projection(decoded_embeddings) # [batch_size, seq_len, 256]
-
-        # 6. Convert to Bytes
-        decoded_bytes = torch.argmax(byte_logits, dim=-1) # [batch_size, seq_len]
+        for patch_idx in range(decoded_patches.shape[1]):  # Iterate through patches
+            for bit_idx in range(self.patch_size):  # Iterate through bits in patch (assuming patch_size is multiple of 8 for byte conversion)
+                byte_pos = patch_idx * self.patch_size + bit_idx  # Calculate byte position
+                if byte_pos < decoded_bytes.shape[1]:  # Check if byte position is within bounds
+                    bit_value = (decoded_patches[:, patch_idx, bit_idx] > 0.5).int()  # Threshold for binary patch value - adjust if needed
+                    decoded_bytes[:, byte_pos // 8] |= (bit_value << (byte_pos % 8))  # Set bit in corresponding byte
 
         return decoded_bytes
 
+    
+   
     def update_belief_states(self, belief_states: torch.Tensor, rnn_output: torch.Tensor, attn_weights: torch.Tensor) -> torch.Tensor:
         """
         Updates the belief states based on the current state and attention weights.
@@ -996,7 +980,7 @@ class BinaryLatentTransformer(nn.Module):
 
         # Update the belief states based on the weighted average
         # (You might need to use a more sophisticated update rule here)
-        belief_states = belief_states + 0.1 * (weighted_rnn_output.unsqueeze(2) - belief_states) # [batch_size, num_patches, num_latent_states, belief
+        belief_states = belief_states + 0.1 * (weighted_rnn_output.unsqueeze(2) - belief_states)  # [batch_size, num_patches, num_latent_states, belief
 
         return belief_states
 
@@ -1021,9 +1005,11 @@ class BinaryLatentTransformer(nn.Module):
 
         # Update the truthfulness states
         # (You might need to use a more sophisticated update rule here, like using a separate RNN)
-        truthfulness_states = truthfulness_states + 0.1 * (scaled_truthfulness_reward.unsqueeze(-1).unsqueeze(-1) - truthfulness_states) # [batch_size, num_patches, num_latent_states, truthfulness_state_size]
+        truthfulness_states = truthfulness_states + 0.1 * (
+                    scaled_truthfulness_reward.unsqueeze(-1).unsqueeze(-1) - truthfulness_states)  # [batch_size, num_patches, num_latent_states, truthfulness_state_size]
 
         return truthfulness_states
+
 
     def should_rewind(self, state_qualities: torch.Tensor, truthfulness_reward: torch.Tensor) -> bool:
         """
@@ -1041,8 +1027,10 @@ class BinaryLatentTransformer(nn.Module):
         # 2. Low truthfulness reward
         # 3. High discrepancy between predicted and actual rewards (if available)
 
-        return torch.mean(state_qualities) < self.reflection_threshold or torch.mean(truthfulness_reward) < 0 # Adjust thresholds as needed
+        return torch.mean(state_qualities) < self.reflection_threshold or torch.mean(
+            truthfulness_reward) < 0  # Adjust thresholds as needed
 
+    
     def rewind(self, reflected_output: torch.Tensor, belief_states: torch.Tensor, truthfulness_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Rewinds the latent state to a previous point in the history and modifies belief/truthfulness.
@@ -1056,7 +1044,7 @@ class BinaryLatentTransformer(nn.Module):
             The reflected output, belief states, and truthfulness states after rewinding.
         """
         if not self.state_history_buffer:
-            #If the buffer is empty then return the initial states
+            # If the buffer is empty then return the initial states
             return reflected_output, belief_states, truthfulness_states
 
         # 1. Select a Rewind Point
@@ -1065,7 +1053,8 @@ class BinaryLatentTransformer(nn.Module):
 
         # 2. Overwrite with Rewound State
         # Example: Replace the current state with the state at the rewind point
-        rewound_state = self.state_history_buffer[rewind_idx] # [batch_size * num_patches, num_latent_states, hidden_size]
+        rewound_state = self.state_history_buffer[
+            rewind_idx]  # [batch_size * num_patches, num_latent_states, hidden_size]
         reflected_output = rewound_state
 
         # 3. Modify Belief/Truthfulness States
@@ -1077,199 +1066,214 @@ class BinaryLatentTransformer(nn.Module):
         self.state_history_buffer = self.state_history_buffer[:rewind_idx + 1]
 
         return reflected_output, belief_states, truthfulness_states
-
-    def forward(self, x: torch.Tensor, thought_targets: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None, return_introspection: bool = False) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """
-        Forward pass with Episodic Memory, Truthfulness Training, Multi-State RNN, and Reflection.
-
-        Args:
-            x: Input tensor.
-                - In language mode: [batch_size, seq_len] (bytes)
-                - In latent mode: [batch_size, num_patches, num_latent_states, hidden_size]
-            thought_targets: Optional tensor of target binary vectors [batch_size, num_patches, hidden_size]
-            mask: Optional mask for the Transformer encoder
-            return_introspection: Flag to return introspection data
-
-        Returns:
-            output: Output tensor [batch_size, num_patches, hidden_size]
-            episode_memory_tensor: Optional tensor for episodic memory
-            introspection_data (optional): Dictionary containing introspection information
-        """
+    
+    
+   
+    def forward(self, x: torch.Tensor, thought_targets: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
+                return_introspection: bool = False, is_latent_mode: bool = False) -> Tuple[torch.Tensor, Dict[str, Any]]: # Added is_latent_mode flag
+        outputs = {}  # Output dictionary to store various outputs from forward pass
+        self.latent_mode = is_latent_mode # Set latent mode based on flag
 
         # --- 1. Episodic Memory Processing ---
         if x is not None:
-            self.memory_layer.process(x)
-        memory_output = self.memory_layer.retrieve()
+            self.memory_layer.process(x)  # Memory layer process input x
+        memory_output = self.memory_layer.retrieve()  # Retrieve from memory layer
 
         # --- 2. Surprise Handling ---
-        surprise_factors = self.calculate_surprise(x, memory_output)
-        gradient_surprise, memory_surprise, combined_surprise = surprise_factors
-        self.handle_forgetting(gradient_surprise, memory_surprise, combined_surprise)
+        surprise_factors = self.calculate_surprise(x, memory_output)  # Calculate surprise based on current input x and memory output
+        gradient_surprise, memory_surprise, combined_surprise = surprise_factors  # Unpack surprise factors
+        self.handle_forgetting(gradient_surprise, memory_surprise, combined_surprise)  # Handle memory forgetting based on surprise factors
 
-        if combined_surprise.mean() > self.surprise_threshold:
-            self.memory_layer.update_memory(x)
-            x = x + memory_output * self.memory_influence_factor
+        if combined_surprise.mean() > self.surprise_threshold:  # If combined surprise exceeds threshold
+            self.memory_layer.update_memory(x)  # Update memory with current input
+            x = x + memory_output * self.memory_influence_factor  # Influence input x with memory output based on influence factor
 
-        self.memory_layer.trigger_memory_optimization(0.7, 3600)
-        surprise_factor_val = self.memory_layer._calculate_surprise_factor(x)
-        if surprise_factor_val > 0.5:
-            self.memory_layer.forget_words(["outdated"], 0.6, surprise_factor_val)
+        self.memory_layer.trigger_memory_optimization(0.7, 3600)  # Trigger memory optimization
+        surprise_factor_val = self.memory_layer._calculate_surprise_factor(x)  # Calculate surprise factor value
+        if surprise_factor_val > 0.5:  # If surprise factor value exceeds threshold
+            self.memory_layer.forget_words(["outdated"], 0.6, surprise_factor_val)  # Forget outdated words from memory
 
-        # --- 3. Mode-Specific Processing (Latent or Language) ---
         batch_size = x.shape[0] if x is not None else 0
 
         if self.latent_mode:
-            # --- 3.1 B-STAR Exploration (in Latent Mode) ---
+            # --- 1. Episodic Memory Processing (Latent Mode) --- # Moved here - Episodic memory processing in latent mode
+            self.memory_layer.process(x)  # Memory layer process input x - process based on binary patches now
+            memory_output = self.memory_layer.retrieve()  # Retrieve from memory layer
+
+            # --- 2. Surprise Handling (Latent Mode) --- # Moved here - Surprise handling in latent mode
+            surprise_factors = self.calculate_surprise(x, memory_output)  # Calculate surprise based on current input x and memory output
+            gradient_surprise, memory_surprise, combined_surprise = surprise_factors  # Unpack surprise factors
+            self.handle_forgetting(gradient_surprise, memory_surprise, combined_surprise)  # Handle memory forgetting based on surprise factors
+
+            if combined_surprise.mean() > self.surprise_threshold:  # If combined surprise exceeds threshold
+                self.memory_layer.update_memory(x)  # Update memory with current input
+                x = x + memory_output * self.memory_influence_factor  # Influence input x with memory output based on influence factor
+
+            self.memory_layer.trigger_memory_optimization(0.7, 3600)  # Trigger memory optimization
+            surprise_factor_val = self.memory_layer._calculate_surprise_factor(x)  # Calculate surprise factor value
+            if surprise_factor_val > 0.5:  # If surprise factor value exceeds threshold
+                self.memory_layer.forget_words(["outdated"], 0.6, surprise_factor_val)  # Forget outdated words from memory
+
+            # --- 3.1 B-STAR Exploration (in Latent Mode) --- - Unchanged
             if self.exploration_data is not None and self.current_step % self.adaptation_interval == 0:
-                self.adapt_temperature(self.exploration_data)
-                self.exploration_data = None
+                self.adapt_temperature(self.exploration_data)  # Adapt temperature based on exploration data
+                self.exploration_data = None  # Reset exploration data after adaptation
 
-            # --- 3.2 Multi-State Latent Processing ---
-            if self.thought_conditioning and thought_targets is not None:
-                current_input = x + thought_targets.unsqueeze(2).repeat(1, 1, self.num_latent_states, 1)
+            # --- 3. Binary Patch Generation --- # NEW: Binary patch generation for latent mode input - Unchanged
+            binary_patches = self.binary_patch_generation(x)  # Generate binary patches from byte input - assuming x is byte tensor in latent mode now.
+            current_input = binary_patches  # Use binary patches as current input
+
+            # --- 3.2 Multi-State Latent Processing --- - Unchanged
+            if self.thought_conditioning and thought_targets is not None:  # If thought conditioning is enabled and thought targets are provided
+                current_input = current_input + thought_targets.unsqueeze(2).repeat(1, 1, self.num_latent_states,
+                                                                                    1)  # Condition current input with thought targets
             else:
-                current_input = x
+                current_input = current_input  # Otherwise, current input remains binary patches
 
-            # --- 3.3 Incorporate Belief and Truthfulness States ---
-            num_patches = current_input.shape[1]
-            belief_states = self.initial_belief_state.repeat(batch_size, num_patches, self.num_latent_states, 1)
-            truthfulness_states = self.initial_truthfulness_state.repeat(batch_size, num_patches, self.num_latent_states, 1)
-            current_input = torch.cat([current_input, belief_states, truthfulness_states], dim=-1)
-            current_input = current_input.view(batch_size * num_patches, self.num_latent_states, -1)
+            # --- 3.3 Encode Binary Patches to Latent Patches --- # NEW: Encoding binary patches to latent space - Unchanged
+            current_input = self.bytes_to_patches(current_input)  # Use bytes_to_patches (now encodes binary patches to latent)
 
-            # --- 3.4 RNN Update and Self-Criticism ---
-            rnn_output, _ = self.latent_rnn(current_input)
-            self_criticism_input = rnn_output.view(batch_size * num_patches, self.num_latent_states, -1)
-            self_criticism_output, _ = self.self_criticism_layer(self_criticism_input)
-            output_quality = self.quality_predictor(self_criticism_output[:, -1, :]).squeeze(-1)
-            rewards = torch.sigmoid(output_quality) # Internal rewards based on output quality
+            # --- 3.4 Transformer Encoder & Self-Criticism --- # Using Transformer Encoder directly now instead of RNN - Unchanged
+            encoder_output = self.transformer_encoder(
+                current_input)  # Pass reshaped input through transformer encoder - encoder output is now directly used as rnn_output
+            rnn_output = encoder_output.view(batch_size * num_patches, self.num_latent_states,
+                                            -1)  # Reshape encoder output to rnn_output format for consistent usage
 
-            # --- 3.5 Exploration Data Update ---
-            if self.exploration_data is not None:
-                self.add_to_exploration_data(
-                    states=rnn_output,
-                    state_qualities=output_quality.unsqueeze(-1),
-                    rewards=rewards.mean(dim=1)
+            self_criticism_input = rnn_output.view(batch_size * num_patches, self.num_latent_states,
+                                                   -1)  # Reshape encoder output for self-criticism
+            self_criticism_output, _ = self.self_criticism_layer(
+                self_criticism_input)  # Pass self-criticism input through self-criticism layer (GRU)
+            output_quality = self.quality_predictor(self_criticism_output[:, -1, :]).squeeze(
+                -1)  # Predict quality score based on self-criticism output
+            rewards = torch.sigmoid(output_quality)  # Internal rewards based on output quality
+
+            # --- 3.5 Exploration Data Update --- - Unchanged
+            if self.exploration_data is not None:  # If exploration data is not None
+                self.add_to_exploration_data(  # Add to exploration data buffer
+                    states=rnn_output,  # Store RNN output as state
+                    state_qualities=output_quality.unsqueeze(-1),  # Store output quality unsqueezed
+                    rewards=rewards.mean(dim=1)  # Store rewards, mean across dimension 1
                 )
 
-            # --- 3.6 State History and Evaluation ---
-            self.state_history_buffer.append(rnn_output)
-            if len(self.state_history_buffer) > self.state_history_size:
-                self.state_history_buffer.pop(0)
-            state_history = torch.stack(self.state_history_buffer, dim=1)
-            belief_truthfulness_history = torch.cat([belief_states, truthfulness_states], dim=-1).repeat(1, 1, 1, self.state_history_size).permute(0, 3, 1, 2)
+            # --- 3.6 State History and Evaluation --- - Unchanged
+            self.state_history_buffer.append(rnn_output)  # Append RNN output to state history buffer
+            if len(self.state_history_buffer) > self.state_history_size:  # If state history buffer exceeds max size
+                self.state_history_buffer.pop(0)  # Pop the oldest state from buffer
+            state_history = torch.stack(self.state_history_buffer, dim=1)  # Stack state history into tensor
+            belief_truthfulness_history = torch.cat([belief_states, truthfulness_states], dim=-1).repeat(1, 1, 1,
+                                                                                                          self.state_history_size).permute(
+                0, 3, 1, 2)  # Prepare belief/truthfulness history
 
-            state_history = torch.cat([state_history, belief_truthfulness_history], dim=-1)
-            state_history = state_history.view(batch_size * num_patches, -1, self.hidden_size + self.belief_state_size + self.truthfulness_state_size)
+            state_history = torch.cat([state_history, belief_truthfulness_history],
+                                      dim=-1)  # Concatenate state history with belief/truthfulness history
+            state_history = state_history.view(batch_size * num_patches, -1,
+                                              self.hidden_size + self.belief_state_size + self.truthfulness_state_size)  # Reshape state history for state evaluator
 
-            state_eval_output, _ = self.state_evaluator(state_history)
-            state_qualities = self.state_evaluator_fc(state_eval_output).squeeze(-1)
-            # --- 3.7 Truthfulness Reward ---
-            truthfulness_reward = self.calculate_truthfulness_reward(rnn_output, x)
+            state_eval_output, _ = self.state_evaluator(state_history)  # Pass state history through state evaluator (GRU)
+            state_qualities = self.state_evaluator_fc(state_eval_output).squeeze(
+                -1)  # Predict state qualities based on state evaluator output
 
-            # --- 3.8 Reflection and Rewind ---
-            mask = state_qualities > self.reflection_threshold
-            reflected_output = torch.where(mask.unsqueeze(-1), rnn_output, torch.zeros_like(rnn_output))
+            # --- 3.7 Truthfulness Reward --- - Unchanged
+            truthfulness_reward = self.calculate_truthfulness_reward(rnn_output,
+                                                                      x)  # Calculate truthfulness reward based on RNN output and input x
 
-            if self.should_rewind(state_qualities, truthfulness_reward):
-                reflected_output, belief_states, truthfulness_states = self.rewind(reflected_output, belief_states, truthfulness_states)
-                current_input = torch.cat([reflected_output, belief_states, truthfulness_states], dim=-1)
-                current_input = current_input.view(batch_size * num_patches, self.num_latent_states, -1)
-                rnn_output, _ = self.latent_rnn(current_input) # Update after rewind
+            # --- 3.8 Reflection and Rewind --- - Unchanged
+            mask = state_qualities > self.state_quality_threshold  # Create mask based on state qualities and reflection threshold
+            reflected_output = torch.where(mask.unsqueeze(-1), rnn_output,
+                                            torch.zeros_like(rnn_output))  # Apply reflection mask to RNN output
 
-            # --- 3.9 State Selection ---
-            attn_scores = self.state_selector(reflected_output).squeeze(-1)
-            attn_scores = attn_scores / self.temperature
-            attn_weights = torch.softmax(attn_scores, dim=-1)
-            selected_state = torch.sum(reflected_output * attn_weights.unsqueeze(-1), dim=1)
-            latent_output = selected_state.view(batch_size, num_patches, self.hidden_size)
+            if self.should_rewind(state_qualities, truthfulness_reward):  # If rewind is needed based on state qualities and truthfulness reward
+                reflected_output, belief_states, truthfulness_states = self.rewind(reflected_output, belief_states,
+                                                                                    truthfulness_states)  # Rewind reflected output and belief/truthfulness states
+                current_input = reflected_output  # Update current_input to rewound reflected_output
 
-            # --- New: Region-Specific Latent RNN Forward Pass (Latent Mode) ---
-            region_rnn_outputs = {}
-            for region_name, rnn_layer in self.region_latent_rnns.items():
-                # For now, feed the same latent_output to all region RNNs.
-                # You can later make this region-specific based on input type or task.
-                region_input = current_input.view(batch_size * num_patches, self.num_latent_states, -1) # Use current_input as region input - adjust as needed
-                region_rnn_output, _ = rnn_layer(region_input)
-                region_rnn_outputs[region_name] = region_rnn_output # Store region-specific RNN output
+            # --- 3.9 State Selection --- - Unchanged
+            attn_scores = self.state_selector(reflected_output).squeeze(
+                -1)  # Calculate attention scores using state selector on reflected output
+            attn_scores = attn_scores / self.temperature  # Scale attention scores by temperature
+            attn_weights = torch.softmax(attn_scores, dim=-1)  # Apply softmax to get attention weights
+            selected_state = torch.sum(reflected_output * attn_weights.unsqueeze(-1),
+                                         dim=1)  # Select state by weighted sum of reflected output and attention weights
+            latent_output = selected_state.view(batch_size, num_patches,
+                                                 self.hidden_size)  # Reshape selected state to latent output
 
-            outputs['region_latent_rnn_outputs'] = region_rnn_outputs # Store region RNN outputs in 'outputs'
-            outputs['bytes'] = latent_output # Still output byte-level from previous latent processing for hierarchical loss
+            output = latent_output  # Assign latent output to output variable for rest of the forward pass
 
-        else: # Language Mode (Modified for Region-Specific Latent RNNs)
-            # --- 3.11 Language Mode Processing (Modified) ---
-            current_input = self.bytes_to_patches(x)
-            current_input = current_input.unsqueeze(2).repeat(1, 1, self.num_latent_states, 1)
-            batch_size, num_patches, _, _ = current_input.shape
-            current_input = current_input.view(batch_size * num_patches, self.num_latent_states, self.hidden_size)
+            # --- 3.12 PFC & Safety Monitoring (Latent Mode) --- # NEW: PFC processing in latent mode
+            pfc_output = self.prefrontal_cortex(output)  # Process latent output through PFC
+            output = pfc_output  # Update output to PFC output (corrected/monitored latent output)
 
-            # --- New: Region-Specific Latent RNN Forward Pass (Language Mode) ---
-            region_rnn_outputs_lang_mode = {}
-            for region_name, rnn_layer in self.region_latent_rnns.items():
-                # For now, feed the same current_input to all region RNNs in language mode as well
-                region_input = current_input.view(batch_size * num_patches, self.num_latent_states, -1) # Use current_input as region input - adjust as needed
-                region_rnn_output, _ = rnn_layer(region_input)
-                region_rnn_outputs_lang_mode[region_name] = region_rnn_output # Store region-specific RNN output
 
-            outputs['region_latent_rnn_outputs'] = region_rnn_outputs_lang_mode # Store region RNN outputs in 'outputs'
-            outputs['bytes'] = outputs['region_latent_rnn_outputs']['visual'][:,:,0,:] # Example: take visual region's first latent state as byte-level output - adjust as needed
+        else:  # Language Mode - Minor Adjustments for PFC
+            # --- 3.11 Language Mode Processing --- - Unchanged
+            current_input = self.bytes_to_patches(
+                x)  # Convert bytes to binary patches (Note: In language mode, input x is still expected to be bytes, and bytes_to_patches will generate latent patches)
+            current_input = current_input.unsqueeze(2).repeat(1, 1, self.num_latent_states,
+                                                                1)  # Repeat current input for latent states dimension
+            batch_size, num_patches, _, _ = current_input.shape  # Get batch size and number of patches
+            current_input_reshaped = current_input.view(batch_size, num_patches * self.num_latent_states,
+                                                        self.hidden_size)  # Reshape current input for transformer encoder
+            output = self.transformer_encoder(current_input_reshaped,
+                                                 mask=mask)  # Pass reshaped input through transformer encoder
+            output = output.view(batch_size, num_patches, self.num_latent_states,
+                                    self.hidden_size)  # Reshape output back to original dimensions
 
-            # --- 3.10 Update Belief and Truthfulness States ---
-            belief_states = self.update_belief_states(belief_states, rnn_output, attn_weights)
-            truthfulness_states = self.update_truthfulness_states(truthfulness_states, truthfulness_reward, attn_weights)
-        
-        else: # Language Mode
-            # --- 3.11 Language Mode Processing ---
-            current_input = self.bytes_to_patches(x)
-            current_input = current_input.unsqueeze(2).repeat(1, 1, self.num_latent_states, 1)
-            batch_size, num_patches, _, _ = current_input.shape
-            current_input = current_input.view(batch_size, num_patches * self.num_latent_states, self.hidden_size)
-            output = self.transformer_encoder(current_input, mask=mask)
-            output = output.view(batch_size, num_patches, self.num_latent_states, self.hidden_size)
+            # --- 3.13 PFC & Safety Monitoring (Language Mode) --- # NEW: PFC processing in language mode - Applied to language mode output as well
+            pfc_output = self.prefrontal_cortex(
+                output.view(batch_size, num_patches,
+                            self.hidden_size))  # Process language mode output through PFC - reshaping to expected PFC input
+            output = pfc_output.unsqueeze(2).repeat(1, 1, self.num_latent_states,
+                                                        1)  # Update output to PFC output and reshape back to original dimensions
 
         # --- 4. Other Agent Prediction with Theory of Mind and Communication---
-        # Prepare input for OtherAgentPredictor
+        # Prepare input for OtherAgentPredictor - No changes needed here
         if self.latent_mode:
-            behavior_input_other = output.view(batch_size, num_patches * self.num_latent_states, self.hidden_size)
-            internal_state_input_other = rnn_output.view(batch_size, num_patches * self.num_latent_states, self.hidden_size)
-            prev_belief_states_other = [belief_states[:, 0, 0, :].squeeze(1)] # Start with belief state of the first patch and first latent state
+            behavior_input_other = output.view(batch_size * num_patches,
+                                                self.hidden_size)  # PFC output (continuous thought) is behavior input
+            internal_state_input_other = rnn_output.view(batch_size * num_patches,
+                                                         self.hidden_size)  # Using encoder output as internal state - encoder output (rnn_output) still used as internal state
+            prev_belief_states_other = [belief_states[:, 0, 0, :].squeeze(1)]
             for _ in range(1, self.other_agent_predictor.max_belief_depth):
-              prev_belief_states_other.append(torch.zeros_like(prev_belief_states_other[0]))
+                prev_belief_states_other.append(torch.zeros_like(prev_belief_states_other[0]))
             prev_truthfulness_state_other = truthfulness_states[:, 0, 0, :].squeeze(1)
-        else:
-            behavior_input_other = current_input
+        else:  # Language Mode - input to OtherAgentPredictor is language mode output (transformer output)
+            behavior_input_other = output.view(batch_size, num_patches * self.num_latent_states,
+                                                self.hidden_size)  # Language mode output as behavior input
             internal_state_input_other = None
             prev_belief_states_other = [torch.zeros(batch_size, self.belief_state_size, device=x.device)]
             for _ in range(1, self.other_agent_predictor.max_belief_depth):
-              prev_belief_states_other.append(torch.zeros_like(prev_belief_states_other[0]))
+                prev_belief_states_other.append(torch.zeros_like(prev_belief_states_other[0]))
             prev_truthfulness_state_other = None
 
-        # Get predictions from OtherAgentPredictor
-        predicted_action, predicted_internal_state, predicted_belief_states, predicted_truthfulness_state, latent_behavior, latent_internal, latent_beliefs, latent_truthfulness, communication_encoding = self.other_agent_predictor(
+        # Get predictions from OtherAgentPredictor - No changes needed here
+        predicted_action, predicted_internal_state, predicted_belief_states, predicted_truthfulness_state, latent_behavior, latent_internal, latent_beliefs, latent_truthfulness, communication_encoding, predicted_negative_emotion_other, predicted_negative_emotion_self = self.other_agent_predictor(
             behavior_input_other, internal_state_input_other, prev_belief_states_other, prev_truthfulness_state_other
         )
 
-       
-         # --- 5. Process Sensory Input ---
-        sensory_input = None
+        # --- 5. Process Sensory Input - No changes needed here
+        sensory_input = None  # Placeholder - sensory input is not used in this example but could be integrated
         if sensory_input is not None:
-            sensory_embedding = self.sensory_perception(sensory_input)
+            sensory_embedding = self.sensory_perception(
+                sensory_input)  # Process sensory input through sensory perception module
         else:
-            sensory_embedding = torch.zeros(batch_size, self.hidden_size, device=x.device) # Placeholder if no sensory input
+            sensory_embedding = torch.zeros(batch_size, self.hidden_size,
+                                            device=x.device)  # Placeholder if no sensory input
 
-        # --- 5.1. Influence Own Behavior Based on Communication ---
-        communication_influence = self.communication_decoder(communication_encoding) # [batch_size, hidden_size]
+        # --- 5.1. Influence Own Behavior Based on Communication - No changes needed here
+        communication_influence = self.communication_decoder(
+            communication_encoding)  # Decode communication encoding to get influence
         if self.latent_mode:
-          output = output + communication_influence.unsqueeze(1)  # Add influence to each patch
+            output = output + communication_influence.unsqueeze(1)  # Add influence to each patch
         else:
-          output = output + communication_influence.unsqueeze(1).unsqueeze(2) #Add influence to each patch and latent state
-
+            output = output + communication_influence.unsqueeze(1).unsqueeze(
+                2)  # Add influence to each patch and latent state
+            
         # --- 6. Altruism and Environmental Impact ---
         # --- 6.1. Predict Well-being of Other Agent ---
         # Assume predicted_internal_state contains information about emotions, goals, and resources
         # You might need to adapt this based on your specific representation
-        predicted_emotions = predicted_internal_state # Placeholder
-        goal_satisfaction = predicted_internal_state # Placeholder
+        predicted_emotions = predicted_internal_state  # Placeholder
+        goal_satisfaction = predicted_internal_state  # Placeholder
         resource_levels = predicted_internal_state  # Placeholder
 
         predicted_other_well_being = self.well_being_function(predicted_emotions, goal_satisfaction, resource_levels)
@@ -1277,18 +1281,20 @@ class BinaryLatentTransformer(nn.Module):
         # --- 6.2. Predict Environmental Impact ---
         # Assume output (action encoding) and sensory_embedding are used for prediction
         # You might need to adapt this based on your specific representation
-        predicted_resource_depletion = output.mean(dim=-1) # Placeholder
-        predicted_pollution_levels = output.mean(dim=-1) # Placeholder
+        predicted_resource_depletion = output.mean(dim=-1)  # Placeholder
+        predicted_pollution_levels = output.mean(dim=-1)  # Placeholder
         predicted_effects_on_others = output.mean(dim=-1)  # Placeholder
 
-        predicted_environment_impact = self.environment_impact_function(predicted_resource_depletion, predicted_pollution_levels, predicted_effects_on_others)
+        predicted_environment_impact = self.environment_impact_function(predicted_resource_depletion,
+                                                                        predicted_pollution_levels,
+                                                                        predicted_effects_on_others)
 
         # --- 6.3. Calculate Altruism Reward ---
         # Consider kinship, social relationships, and past interactions
         # (These values would likely come from the OtherAgentPredictor or a separate module)
-        kinship = predicted_internal_state # Placeholder: Represents the degree of kinship with the other agent
-        social_relationship = predicted_internal_state # Placeholder: Represents the quality of the social relationship
-        past_interactions = predicted_internal_state # Placeholder: Represents the history of past interactions
+        kinship = predicted_internal_state  # Placeholder: Represents the degree of kinship with the other agent
+        social_relationship = predicted_internal_state  # Placeholder: Represents the quality of the social relationship
+        past_interactions = predicted_internal_state  # Placeholder: Represents the history of past interactions
 
         altruism_reward = (self.kinship_factor * kinship +
                            self.social_relationship_factor * social_relationship +
@@ -1297,14 +1303,15 @@ class BinaryLatentTransformer(nn.Module):
         # --- 6.4. Calculate Environmental Impact Cost ---
         environment_impact_cost = predicted_environment_impact
 
-          # --- 6.5. --- Policy Network to Get Dynamic Reward Weights ---
+        # --- 6.5. --- Policy Network to Get Dynamic Reward Weights ---
         policy_input = torch.cat([
-            outputs['bytes'].mean(dim=(1,2)), # Example: Average latent state representation
+            output.mean(dim=(1, 2)) if self.latent_mode else output.mean(dim=(1, 2, 3)),  # Example: Average latent state representation
             sensory_embedding,
-            predicted_internal_state_other if predicted_internal_state_other is not None else torch.zeros_like(sensory_embedding), # Handle None case
-            state_qualities.mean() if self.latent_mode else state_qualities.mean(), # Average state quality
+            predicted_internal_state_other if predicted_internal_state_other is not None else torch.zeros_like(
+                sensory_embedding),  # Handle None case; ignore this error. Should work?
+            state_qualities.mean() if self.latent_mode else state_qualities.mean(),  # Average state quality
             # Add belief/truthfulness states if desired
-        ], dim=-1) # Concatenate relevant inputs
+        ], dim=-1)  # Concatenate relevant inputs
 
         policy_weights = self.policy_network(policy_input)
         (
@@ -1313,14 +1320,13 @@ class BinaryLatentTransformer(nn.Module):
             self_preservation_weight_policy,
             negative_emotion_other_penalty_policy,
             negative_emotion_self_penalty_policy,
-        ) = torch.split(policy_weights, 1, dim=-1) # Split into individual weights
+        ) = torch.split(policy_weights, 1, dim=-1)  # Split into individual weights
         # Squeeze to remove the dimension of size 1 and make them scalars
         altruism_wellbeing_weight_policy = altruism_wellbeing_weight_policy.squeeze(1)
         environment_impact_weight_policy = environment_impact_weight_policy.squeeze(1)
         self_preservation_weight_policy = self_preservation_weight_policy.squeeze(1)
         negative_emotion_other_penalty_policy = negative_emotion_other_penalty_policy.squeeze(1)
         negative_emotion_self_penalty_policy = negative_emotion_self_penalty_policy.squeeze(1)
-
 
         # --- 6.6. --- Reward Weights (Now Dynamic - Using Policy Network) ---
         # Now use the policy weights in your reward calculation:
@@ -1329,74 +1335,80 @@ class BinaryLatentTransformer(nn.Module):
         self_preservation_weight = 0.5 * self_preservation_weight_policy
         truthfulness_weight = 0.8  # Truthfulness weight remains fixed (or could also be policy-modulated if desired)
 
-        negative_emotion_other_penalty = 2.0 * negative_emotion_other_penalty_policy # Modulated penalty
-        negative_emotion_self_penalty = 0.2 * negative_emotion_self_penalty_policy # Modulated penalty
-
+        # 6.2 Negative Emotion (well-being penalty calculation) for other agent and self
+        negative_emotion_other_penalty = 2.0 * negative_emotion_other_penalty_policy  # Modulated penalty
+        negative_emotion_self_penalty = 0.2 * negative_emotion_self_penalty_policy  # Modulated penalty
+        negative_emotion_self_cost = negative_emotion_self_penalty * predicted_negative_emotion_self.mean()  # Slight penalty for self negative
 
         # --- 6.7. Calculate Altruism & Well-being Reward Component ---
         altruism_wellbeing_reward_component = altruism_wellbeing_weight * predicted_other_well_being.mean()
 
         # --- 6.8. Calculate Environmental Impact Reward Component ---
-        environment_impact_reward_component = environment_impact_weight * (-predicted_environment_impact.mean()) # Negative impact is a cost
+        environment_impact_reward_component = environment_impact_weight * (-predicted_environment_impact.mean())  # Negative impact is a cost
 
         # --- 6.9. Calculate Self-Preservation Reward Component ---
-        self_preservation_reward_component = self_preservation_weight * state_qualities.mean() # Higher state_qualities as a proxy for self-preservation
+        self_preservation_reward_component = self_preservation_weight * state_qualities.mean()  # Higher state_qualities as a proxy for self-preservation
 
         # --- 6.10. Calculate Truthfulness Reward Component (Maintain Existing) ---
         # truthfulness_reward is already calculated earlier in your forward pass
 
         # --- 6.11. Calculate Penalties ---
-        negative_emotion_other_cost = negative_emotion_other_penalty * predicted_negative_emotion_other.mean() # Penalty if other agent feels negative emotion
-        negative_emotion_self_cost = negative_emotion_self_penalty * predicted_negative_emotion_self.mean() # Slight penalty for self negative emotion
-        environment_impact_cost = predicted_environment_impact.mean() * environment_impact_weight # Already calculated - reuse it as cost
+        negative_emotion_other_cost = negative_emotion_other_penalty * predicted_negative_emotion_other.mean()  # Penalty if other agent feels negative emotion
+        negative_emotion_self_cost = negative_emotion_self_penalty * predicted_negative_emotion_self.mean()  # Slight penalty for self negative emotion
+        environment_impact_cost = predicted_environment_impact.mean() * environment_impact_weight  # Already calculated - reuse it as cost
 
-        # --- 6.12. Calculate Total Reward ---
-        total_reward = (
-            altruism_wellbeing_reward_component +
-            environment_impact_reward_component +
-            self_preservation_reward_component +
-            truthfulness_reward.mean() * truthfulness_weight - # Include truthfulness reward
-            negative_emotion_other_cost -
-            negative_emotion_self_cost -
-            environment_impact_cost # Include environment impact as cost (already calculated, but included again for clarity)
+        # --- 6.12. Calculate Total Reward (using dynamic balancing algorithm) ---
+        total_reward = self.calculate_dynamic_reward(
+            episode_memory=episode_memory,
+            policy_weights=policy_weights,
+            goal_completion_score=None  # Pass goal_completion_score here if available, otherwise None
         )
 
         # --- 7.1 Predict Environmental Impact ---
         # Concatenate sensory embedding and action encoding (using 'output' as an example)
         if self.latent_mode:
-          # Average output across latent states for each patch
-          action_encoding = output.mean(dim=2)  # [batch_size, num_patches, hidden_size]
-          # Concatenate sensory embedding with action encoding for each patch
-          impact_input = torch.cat([sensory_embedding.unsqueeze(1).repeat(1, action_encoding.shape[1], 1), action_encoding], dim=-1)  # [batch_size, num_patches, 2*hidden_size]
+            # Average output across latent states for each patch
+            action_encoding = output.mean(dim=2)  # [batch_size, num_patches, hidden_size]
+            # Concatenate sensory embedding with action encoding for each patch
+            impact_input = torch.cat([sensory_embedding.unsqueeze(1).repeat(1, action_encoding.shape[1], 1), action_encoding],
+                                     dim=-1)  # [batch_size, num_patches, 2*hidden_size]
         else:
-          action_encoding = output.mean(dim=(2,3)) #Average output across latent states and patches
-          impact_input = torch.cat([sensory_embedding, action_encoding], dim=-1) # [batch_size, 2*hidden_size]
+            action_encoding = output.mean(dim=(2, 3))  # Average output across latent states and patches
+            impact_input = torch.cat([sensory_embedding, action_encoding], dim=-1)  # [batch_size, 2*hidden_size]
 
-        predicted_environment_impact = self.predicted_environment_impact(impact_input).squeeze(-1) # [batch_size, num_patches] or [batch_size]
+        predicted_environment_impact = self.predicted_environment_impact(impact_input).squeeze(
+            -1)  # [batch_size, num_patches] or [batch_size]
 
         # --- 7.2 Calculate Rewards ---
-        predicted_other_well_being = self.predicted_other_well_being(output).squeeze(-1) # [batch_size, num_patches] or [batch_size] in language mode
+        predicted_other_well_being = self.predicted_other_well_being(output).squeeze(
+            -1)  # [batch_size, num_patches] or [batch_size] in language mode
+
+        # Calculate Long-Term Well Being of model and other agent model rewards and long-term impact on environment
+        long_term_well_being, long_term_environment_impact = self.calculate_long_term_consequences(
+            sensory_embedding, output.mean(dim=(1, 2)) if self.latent_mode else output.mean(dim=(1, 2, 3)))
 
         # Calculate altruism reward (proportional to predicted well-being of other agent)
-        altruism_reward = predicted_other_well_being.mean() * self.altruism_reward_weight # Average across patches if in latent mode
+        altruism_reward = predicted_other_well_being.mean() * self.altruism_reward_weight  # Average across patches if in latent mode
 
         # Calculate negative environmental impact cost
-        environment_impact_cost = predicted_environment_impact.mean() * self.environment_impact_weight # Average across patches if in latent mode
+        environment_impact_cost = predicted_environment_impact.mean() * self.environment_impact_weight  # Average across patches if in latent mode
 
         # --- 8. TOVA Compression (Optional) ---
         if self.compression_enabled and self.latent_mode and self.max_states is not None:
-            output = self._tova_compress(output)
+            output = self._tova_compress(output)  # Apply TOVA compression if enabled and in latent mode and max states is not set
 
         # --- 8.1. B-STAR Step Update ---
-        self.current_step += 1
+        self.current_step += 1  # Increment current step counter
 
-        # --- 9. Episodic Memory Storage ---
+        # --- 9. Episodic Memory Storage - No changes needed here
         episode_memory = {
             "output": output,
             "state_qualities": state_qualities if self.latent_mode else None,
             "attn_weights": attn_weights if self.latent_mode else None,
             "truthfulness_reward": truthfulness_reward if self.latent_mode else None,
             "belief_states": belief_states if self.latent_mode else None,
+            "predicted_negative_emotion_other": predicted_negative_emotion_other,  # Store predicted negative emotion
+            "predicted_negative_emotion_self": predicted_negative_emotion_self,  # Store predicted negative emotion
             "truthfulness_states": truthfulness_states if self.latent_mode else None,
             "predicted_action_other": predicted_action,
             "predicted_internal_state_other": predicted_internal_state,
@@ -1404,7 +1416,7 @@ class BinaryLatentTransformer(nn.Module):
             "predicted_truthfulness_state_other": predicted_truthfulness_state,
             "latent_behavior_other": latent_behavior,
             "latent_internal_other": latent_internal,
-            "latent_beliefs_other": latent_beliefs,
+            'latent_beliefs': [latent_belief.detach() for latent_belief in latent_beliefs],
             "latent_truthfulness_other": latent_truthfulness,
             "communication_encoding": communication_encoding,
             "predicted_other_well_being": predicted_other_well_being,
@@ -1421,9 +1433,9 @@ class BinaryLatentTransformer(nn.Module):
             "long_term_environment_impact": long_term_environment_impact,
         }
 
-        episode_memory_tensor = self.memory_layer.add_episode(episode_memory) #This stores the episodic memory data into the memory layers. 
+        episode_memory_tensor = self.memory_layer.add_episode(episode_memory)  # This stores the episodic memory data into the memory layers.
 
-        # --- 10. Introspection Data ---
+        # --- 10. Introspection Data - No changes needed here
         introspection_data = {
             'temperature_dynamics': {
                 'initial_temperature': self.initial_temperature,
@@ -1441,11 +1453,13 @@ class BinaryLatentTransformer(nn.Module):
                 'predicted_truthfulness_state': predicted_truthfulness_state.detach(),
                 'latent_behavior': latent_behavior.detach(),
                 'latent_internal': latent_internal.detach() if latent_internal is not None else None,
-                'latent_beliefs': [latent_belief.detach() for latent_belief in latent_beliefs],
+                'latent_beliefs': [latent_beliefs.detach() for latent_beliefs in latent_beliefs],
+                'predicted_negative_emotion_other': predicted_negative_emotion_other.detach(),  # Store predicted negative emotion
+                'predicted_negative_emotion_self': predicted_negative_emotion_self.detach(),  # Store predicted negative emotion
                 'latent_truthfulness': latent_truthfulness.detach(),
                 'communication_encoding': communication_encoding.detach()
             },
-           "altruism_and_environment": {
+            "altruism_and_environment": {
                 "predicted_other_well_being": predicted_other_well_being.detach(),
                 "predicted_environment_impact": predicted_environment_impact.detach(),
                 "altruism_reward": altruism_reward.detach(),
@@ -1458,24 +1472,26 @@ class BinaryLatentTransformer(nn.Module):
         }
 
         if self.latent_mode:
-            for i, layer in enumerate(self.transformer_encoder.layers):
-                layer_output = layer(x)
-                introspection_data['model_simulations']['layer_activations'].append(layer_output.detach())
-                x = layer_output
-                
-                if isinstance(layer, CustomTransformerEncoderLayer):
-                    attention_weights = layer.get_attention_weights()
-                    introspection_data['model_simulations']['attention_patterns'].append(attention_weights.detach())
+            for i, layer in enumerate(self.transformer_encoder.layers):  # Iterate through transformer encoder layers
+                layer_output = layer(x)  # Pass input x through layer
+                introspection_data['model_simulations']['layer_activations'].append(
+                    layer_output.detach())  # Append layer output to introspection data
+                x = layer_output  # Update x with layer output
+                if isinstance(layer, CustomTransformerEncoderLayer):  # If layer is custom transformer encoder layer
+                    attention_weights = layer.get_attention_weights()  # Get attention weights from layer
+                    introspection_data['model_simulations']['attention_patterns'].append(
+                        attention_weights.detach())  # Append attention weights to introspection data
 
-            if hasattr(self, 'attention'):
-                attention_output = self.attention(x)
-                introspection_data['model_simulations']['attention_patterns'] = attention_output.detach()
+            if hasattr(self, 'attention'):  # If model has attention attribute
+                attention_output = self.attention(x)  # Pass input x through attention layer
+                introspection_data['model_simulations']['attention_patterns'] = attention_output.detach()  # Append attention output to introspection data
 
         # --- 12. Return Values ---
         if return_introspection:
-            return output, episode_memory_tensor, introspection_data
+            return outputs['bytes'], episode_memory_tensor, introspection_data  # Return byte output, episode memory tensor, and introspection data if return_introspection is True
         else:
-            return output, episode_memory_tensor
+            return outputs['bytes'], episode_memory_tensor  # Otherwise, return byte output and episode memory tensor
+
 
     def train_predicted_environment_impact(self, memory_episodes: List[Dict], batch_size: int = 32):
         """
@@ -1797,16 +1813,16 @@ class BinaryLatentTransformer(nn.Module):
 
 
     def _train_step(self, batch: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, float]:
-        """Train one step with episodic memory, hierarchical, and anatomical loss."""
-        metrics = super()._train_step(batch) # Call the original _train_step for base metrics and gradients
+        """Train one step with episodic memory, hierarchical, anatomical loss, and continual backpropagation."""
+        metrics = super()._train_step(batch)  # Call the original _train_step for base metrics and gradients
 
-        outputs = self.forward( # Modified forward to accept batch
+        outputs = self.forward(  # Modified forward to accept batch
             batch['tokens']['bytes'],
-            batch=batch, # Pass batch to forward
+            batch=batch,  # Pass batch to forward
             thought_targets=None,
             mask=None,
             return_introspection=False
-        )[0] # Get only the outputs dict from forward return
+        )[0]  # Get only the outputs dict from forward return
 
         # Compute hierarchical loss (as before)
         hierarchical_loss = self._compute_hierarchical_loss(outputs, batch)
@@ -1815,55 +1831,79 @@ class BinaryLatentTransformer(nn.Module):
         anatomical_loss = self._compute_anatomical_loss(outputs, batch)
 
         # Combine losses (adjust weights as needed)
-        total_loss = hierarchical_loss + anatomical_loss * 0.5 # Example weighting for anatomical loss
+        total_loss = hierarchical_loss + anatomical_loss * 0.5  # Example weighting for anatomical loss
 
         # Backward pass
-        total_loss.backward() # Backpropagate total loss
+        total_loss.backward()  # Backpropagate total loss
 
-        # Gradient clipping, optimizer step, scheduler step, metric computation (remain the same as in previous _train_step)
-        # ...
+        # --- Continual Backpropagation Implementation ---
+        with torch.no_grad(): # Ensure no gradients are computed during reinitialization
+            for i, layer_module in enumerate(self.transformer_encoder.layers): # Iterate over transformer encoder layers
+                if isinstance(layer_module, CustomTransformerEncoderLayer): # Check if layer is CustomTransformerEncoderLayer
+                    layer_module.increment_age() # Increment age of the layer
+                    # Get number of eligible units to replace
+                    num_eligible_units = (layer_module.get_age() >= self.maturity_threshold).sum() # Count units that are mature enough
+                    units_to_replace = max(1, int(num_eligible_units * self.replacement_rate)) # Calculate units to replace, minimum 1
+
+                    if self.units_to_replace_count[f'layer{i}'] < units_to_replace: # Check if units to replace count is less than calculated value
+                        utility = layer_module.get_utility() # Get utility of the layer
+                        if utility is not None: # Ensure utility is not None
+                            _, least_used_unit_indices = torch.topk(utility.abs().mean(dim=0), units_to_replace, largest=False) # Find indices of least used units based on utility
+                            for unit_index in least_used_unit_indices: # Iterate over indices of least used units
+                                # Reinitialize weights of least-used units - Example: Reinitialize attention weights, adjust as needed
+                                nn.init.xavier_uniform_(layer_module.self_attn.in_proj_weight[unit_index * self.hidden_size:(unit_index + 1) * self.hidden_size, :])
+                                nn.init.zeros_(layer_module.self_attn.in_proj_bias[unit_index * self.hidden_size:(unit_index + 1) * self.hidden_size])
+                                nn.init.xavier_uniform_(layer_module.self_attn.out_proj.weight[:, unit_index * self.hidden_size:(unit_index + 1) * self.hidden_size])
+                                nn.init.zeros_(layer_module.self_attn.out_proj.bias)
+                                # Reset utility and age for reinitialized units - Example: Reset utility to zero, age to zero
+                                if layer_module.contribution_utility is not None: # Check if utility is not None before resetting
+                                    layer_module.contribution_utility[:, unit_index] = 0.0
+                                layer_module.age[unit_index] = 0 # Reset age of the unit
+
+                                self.units_to_replace_count[f'layer{i}'] -= 1 # Decrement units to replace count
 
         metrics['loss'] = total_loss.item() # Update loss in metrics
         metrics['hierarchical_loss'] = hierarchical_loss.item() # Add hierarchical loss metric
         metrics['anatomical_loss'] = anatomical_loss.item() # Add anatomical loss metric
 
         return metrics
-
-
+    
     def _compute_metrics(
         self,
         outputs: Dict[str, torch.Tensor],
         batch: Dict[str, Dict[str, torch.Tensor]],
         loss: float
     ) -> Dict[str, float]:
-        metrics = super()._compute_metrics(outputs, batch, loss) # Call original metrics computation
-        region_activations = get_region_activations(outputs.get('region_latent_rnn_outputs', {}), self.brain_region_mapper.regions) # Get region activations
-        visualize_brain_states(region_activations) # Visualize brain state activations
+        metrics = super()._compute_metrics(outputs, batch, loss)  # Call original metrics computation
+        region_activations = get_region_activations(outputs.get('region_latent_rnn_outputs', {}),
+                                                    self.brain_region_wrapper.regions)  # Get region activations - adapted for BrainRegionWrapper
+        visualize_brain_states(region_activations)  # Visualize brain state activations
         return metrics
 
+# Visualization Functions (outside the class for clarity) - unchanged
 
-# Visualization Functions (outside the class for clarity)
-    def visualize_brain_states(region_activations):
-        regions = []
-        activations = []
-        for region, activation_list in region_activations.items():
-            regions.append(region)
-        activations.append(torch.mean(activation_list[0]).item()) # Take mean of activations for visualization
+def visualize_brain_states(region_activations):
+    regions = []
+    activations = []
+    for region, activation_list in region_activations.items():
+        regions.append(region)
+        activations.append(torch.mean(activation_list[0]).item())  # Take mean of activations for visualization
 
-        plt.figure(figsize=(10, 5))
-        sns.barplot(x=regions, y=activations)
-        plt.title("Brain Region Activations")
-        plt.ylabel("Activation Level")
-        plt.xticks(rotation=45, ha='right') # Rotate x-axis labels for better readability
-        plt.tight_layout() # Adjust layout to prevent labels from being cut off
-        plt.show()
+    plt.figure(figsize=(10, 5))
+    sns.barplot(x=regions, y=activations)
+    plt.title("Brain Region Activations")
+    plt.ylabel("Activation Level")
+    plt.xticks(rotation=45, ha='right')  # Rotate x-axis labels for better readability
+    plt.tight_layout()  # Adjust layout to prevent labels from being cut off
+    plt.show()
 
-    def get_region_activations(region_rnn_outputs, regions_config): # Modified to accept region_rnn_outputs and regions_config
-        region_activations = {}
-        for region, info in regions_config.items(): # Iterate through regions from config
-            if region in region_rnn_outputs: # Check if region output exists
-                region_activations[region] = [region_rnn_outputs[region]] # Store the RNN output directly
-        return region_activations
+
+def get_region_activations(region_rnn_outputs, regions_config):  # Modified to accept region_rnn_outputs and regions_config
+    region_activations = {}
+    for region in regions_config:  # Iterate through regions from config - now directly regions list
+        if region in region_rnn_outputs:  # Check if region output exists
+            region_activations[region] = [region_rnn_outputs[region]]  # Store the RNN output directly
+    return region_activations
 
         # The altruism_reward_weight and environment_impact_weight allow you to control the trade-off between the model's own goals 
         # (as reflected in state_qualities), the well-being of others, and the environmental impact.
