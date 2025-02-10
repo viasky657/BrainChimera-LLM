@@ -1,0 +1,74 @@
+{
+  "model_config": {
+    "binary_latent_transformer": {
+      "hidden_size": 512,
+      "num_layers": 6,
+      "num_heads": 8,
+      "ff_dim": 2048,
+      "sensory_input_channels": 3,
+      "max_states": null,
+      "patch_size": 4,
+      "num_latent_states": 4,
+      "reflection_threshold": 0.5,
+      "state_history_size": 5,
+      "initial_temperature": 1.0,
+      "temperature_decay": 0.995,
+      "min_temperature": 0.5,
+      "b_star_n_star": 4,
+      "self_criticism_layers": 2,
+      "self_criticism_hidden": 128,
+      "surprise_threshold": 0.5,
+      "memory_influence_factor": 0.5,
+      "state_quality_threshold": 0.5,
+      "belief_state_size": 16,
+      "truthfulness_state_size": 8,
+      "altruism_reward_weight": 0.1,
+      "environment_impact_weight": 0.1,
+      "kinship_factor": 0.5,
+      "social_relationship_factor": 0.3,
+      "past_interaction_factor": 0.2,
+      "long_term_consequence_horizon": 10,
+      "long_term_discount_factor": 0.9,
+      "replacement_rate": 0.0001,
+      "decay_rate": 0.99,
+      "maturity_threshold": 100,
+      "vocab_size": 256
+    },
+    "brain_region_wrapper": {
+      "hidden_size": 512,
+      "num_layers": 6,
+      "num_heads": 8,
+      "ff_dim": 2048,
+      "regions": ["visual", "auditory", "linguistic", "symbolic"]
+    },
+    "prefrontal_cortex": {
+      "hidden_size": 512,
+      "num_layers": 3
+    },
+    "metacognitive_module": {
+      "hidden_dim": 512,
+      "memory_dim": 512
+    },
+    "value_network": {
+      "hidden_dim": 512
+    },
+    "sensory_perception": {
+      "input_channels": 3,
+      "hidden_size": 512
+    },
+    "policy_network": {
+      "input_size": 2049,
+      "hidden_size": 512,
+      "output_size": 5
+    },
+    "other_agent_predictor": {
+      "input_size": 512,
+      "hidden_size": 512,
+      "num_layers": 2,
+      "belief_state_size": 16,
+      "truthfulness_state_size": 8,
+      "max_belief_depth": 3,
+      "communication_size": 128
+    }
+  }
+}
