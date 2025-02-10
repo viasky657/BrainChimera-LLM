@@ -1,4 +1,4 @@
-#Ortho Gradient Learning Optimizer
+#Ortho Gradient Learning Optimizer Improves the rate at which the Model Groks (will take about half as much training to Grok or generalize its learning using this optimizer over a traditional one.)
 import torch
 from torch.optim import Optimizer
 
