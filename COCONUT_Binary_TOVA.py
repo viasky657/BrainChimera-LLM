@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from typing import Optional, List, Tuple, Any, Dict
 from NueralMemoryLayers import HierarchicalMemory, MemoryNode
+from OrthoGradOptimizer import OrthoGrad, OrthoAdamW, OrthoSGD # Import OrthoGrad optimizer For Grokking Enhancements
+from StableCELoss import stable_cross_entropy_loss # Import Stable Cross-Entropy Loss For Grokking Enhancements
 import typing 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -1812,6 +1815,24 @@ class BinaryLatentTransformer(nn.Module):
         return anatomical_loss
 
 
+    def save_checkpoint (checkpoint = { #Need to call this periodically during train_step function. 
+        'epoch': epoch, #Saves current epoch training step 
+        'config': config.json, #Saves the config for the model so it can be set-up and tested after saving. 
+        'model_state_dict': model.state_dict(),  # Save model parameters
+        'optimizer_state_dict': optimizer.state_dict(), # Save optimizer state
+        'loss': loss, # Optionally save other information like loss
+        # ... other relevant information
+        }): torch.save(checkpoint, 'checkpoint.safetensors') # Or 'checkpoint.pt'
+
+    def load_checkpoint (checkpoint = torch.load('checkpoint.safetensors') # Or 'checkpoint.pt' #Need to call this function if there is a previous checkpoint from a different session that can be loaded, otherwise, start from the beginning. 
+        model.load_state_dict(checkpoint['model_state_dict']) # Load model parameters
+        config= config.json, #loads the config for the model so it can be set-up for training. 
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict']) # Load optimizer state
+        epoch = checkpoint['epoch'] # Load epoch number (if saved)
+        loss = checkpoint['loss']): # Load loss value (if saved)
+
+        model.train() # Set model back to training mode if resuming training
+
     def _train_step(self, batch: Dict[str, Dict[str, torch.Tensor]]) -> Dict[str, float]:
         """Train one step with episodic memory, hierarchical, anatomical loss, and continual backpropagation."""
         metrics = super()._train_step(batch)  # Call the original _train_step for base metrics and gradients
@@ -1823,6 +1844,15 @@ class BinaryLatentTransformer(nn.Module):
             mask=None,
             return_introspection=False
         )[0]  # Get only the outputs dict from forward return
+
+        # --- Initialize Optimizer --- #This should not conflict with contineous back propagation because it works with weight decay during training and not regularization before and after training like the contineous method does. 
+        base_optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=1e-3,
+            weight_decay=0.01
+            )
+            optimizer = OrthoGrad(base_optimizer) # Use OrthoGrad
+
 
         # Compute hierarchical loss (as before)
         hierarchical_loss = self._compute_hierarchical_loss(outputs, batch)
