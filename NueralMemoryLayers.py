@@ -13,7 +13,7 @@ class MemoryNode:
     def __init__(self, memory_chunk, timestamp, centroid=None, surprise_chunk=None, memory_node_id=None, metadata=None):
         self.id = uuid.uuid4() if memory_node_id is None else memory_node_id
         self.memory_chunk = memory_chunk
-        self.timestamp = timestamp
+        self.timestamp = timestamp #system time needs to be saved here. 
         self.centroid = centroid
         self.children = []
         self.last_accessed = time.time()
