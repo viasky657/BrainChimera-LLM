@@ -1,0 +1,2 @@
+ChimeraDatasets/** filter=lfs diff=lfs merge=lfs -text
+llm-pdf-ocr-api/** filter=lfs diff=lfs merge=lfs -text
