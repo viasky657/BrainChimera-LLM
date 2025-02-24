@@ -7,7 +7,7 @@ import torch.optim as optim
 from typing import Optional, List, Tuple, Any, Dict
 from NueralMemoryLayers import HierarchicalMemory, MemoryNode
 from OldCOCONUTUnused.OrthoGradOptimizer import OrthoGrad, OrthoAdamW, OrthoSGD # Import OrthoGrad optimizer For Grokking Enhancements
-from StableCELoss import stable_cross_entropy_loss # Import Stable Cross-Entropy Loss For Grokking Enhancements
+from OldCOCONUTUnused.StableCELoss import stable_cross_entropy_loss # Import Stable Cross-Entropy Loss For Grokking Enhancements
 import typing
 import matplotlib.pyplot as plt
 import seaborn as sns

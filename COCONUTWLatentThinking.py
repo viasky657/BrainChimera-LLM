@@ -6,7 +6,7 @@ import torch.optim as optim
 from typing import Optional, List, Tuple, Any, Dict
 from NueralMemoryLayers import HierarchicalMemory, MemoryNode
 from OldCOCONUTUnused.OrthoGradOptimizer import OrthoGrad, OrthoAdamW, OrthoSGD
-from StableCELoss import stable_cross_entropy_loss
+from OldCOCONUTUnused.StableCELoss import stable_cross_entropy_loss
 import typing
 import matplotlib.pyplot as plt
 import seaborn as sns
