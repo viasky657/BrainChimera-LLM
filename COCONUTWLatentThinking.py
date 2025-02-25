@@ -5,7 +5,6 @@ from torch.nn import CrossEntropyLoss
 import torch.optim as optim
 from typing import Optional, List, Tuple, Any, Dict
 from NueralMemoryLayers import HierarchicalMemory, MemoryNode
-from OldCOCONUTUnused.OrthoGradOptimizer import OrthoGrad, OrthoAdamW, OrthoSGD
 from OldCOCONUTUnused.StableCELoss import stable_cross_entropy_loss
 import typing
 import matplotlib.pyplot as plt
@@ -90,16 +89,25 @@ class PDFEncoder(nn.Module):
 
     def forward(self, pdf_input):
         import io
-        from llm-pdf-ocr-api.pdf_Preparation import extract_text
-        if isinstance(pdf_input, bytes):
-            pdf_stream = io.BytesIO(pdf_input)
+        from llmpdfocr.app import extract_text
+        combined_text = ""
+        if isinstance(pdf_input, (list, tuple)):
+            for file in pdf_input:
+                if isinstance(file, bytes):
+                    pdf_stream = io.BytesIO(file)
+                else:
+                    pdf_stream = file
+                combined_text += extract_text(pdf_stream) + "\n"
         else:
-            pdf_stream = pdf_input
-        text = extract_text(pdf_stream)
-        pdf_bytes = list(text.encode("utf-8"))
+            if isinstance(pdf_input, bytes):
+                pdf_stream = io.BytesIO(pdf_input)
+            else:
+                pdf_stream = pdf_input
+            combined_text = extract_text(pdf_stream)
+        pdf_bytes = list(combined_text.encode("utf-8"))
         if not pdf_bytes:
             return torch.zeros((1, 0, self.patch_dim), dtype=torch.float32)
-        # Enhanced dynamic patching: segment PDF bytes based on global and relative entropy.
+         # Enhanced dynamic patching: segment PDF bytes based on global and relative entropy.
         patches_bytes = entropy_patching_global_threshold(pdf_bytes, self.entropy_predictor, global_threshold=self.entropy_threshold, relative_threshold=0.1)
         embeddings_list = []
         for patch in patches_bytes:
@@ -875,6 +883,96 @@ class VideoEncoderSimple(nn.Module):
         binary_tokens = torch.sigmoid(self.binary_proj(x))
         return (binary_tokens > 0.5).float()
 
+
+# --- Deep Sleep Training Functions ---
+
+def CalculateDeepSleepReward(current_state, action, previous_state, previous_action, deep_sleep_params):
+    """
+    Calculates the deep sleep reward based on the current state, current action,
+    the previous state and previous action using the provided hyperparameters.
+    """
+    target_attention = deep_sleep_params['target_attention']
+    target_compute = deep_sleep_params['target_compute']
+    lambda_attention = deep_sleep_params['lambda_attention']
+    lambda_compute = deep_sleep_params['lambda_compute']
+    lambda_smoothness = deep_sleep_params['lambda_smoothness']
+
+    current_attention = current_state['attention']
+    current_compute = current_state['compute']
+    previous_action_delta_a = previous_action['delta_attention']  # action assumed delta-based
+
+    reward = - (
+        lambda_attention * (current_attention - target_attention)**2 +
+        lambda_compute * (current_compute - target_compute)**2 +
+        lambda_smoothness * (action['delta_attention'] - previous_action_delta_a)**2
+    )
+    return reward
+
+def save_checkpoint(step_name, model=None):
+    import os, json, torch
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    checkpoint_dir = "checkpointLLMSaves"
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+    # Save model checkpoint as a safetensor file if a model is provided; otherwise, save dummy data.
+    checkpoint_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}.safetensors")
+    if model is not None:
+        # In practice, one would use a dedicated safetensors library.
+        torch.save(model.state_dict(), checkpoint_filename)
+    else:
+        with open(checkpoint_filename, "w") as f:
+            f.write("Checkpoint data for " + step_name)
+    print("Checkpoint saved:", checkpoint_filename)
+    
+    # Create a config.json file with instructions for model inference.
+    config_data = {
+        "checkpoint_file": checkpoint_filename,
+        "instructions": "To set up the COCONUT byte latent class model for inference, load the state_dict from this checkpoint file into your model and use the provided configuration parameters."
+    }
+    config_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}_config.json")
+    with open(config_filename, "w") as cf:
+        json.dump(config_data, cf, indent=4)
+    print("Config file saved:", config_filename)
+
+def play_sound(sound_file):
+    import subprocess
+    try:
+        subprocess.run(["aplay", sound_file])
+        print("Sound played:", sound_file)
+    except Exception as e:
+        print("Failed to play sound:", e)
+
+def deep_sleep_training():
+    print("Starting Deep Sleep Training Step")
+    # Define hyperparameters for deep sleep training
+    deep_sleep_params = {
+        'target_attention': 0.1,
+        'target_compute': 0.2,
+        'lambda_attention': 1.0,
+        'lambda_compute': 1.0,
+        'lambda_smoothness': 0.5
+    }
+    # Dummy values for demonstration – in practice these would be retrieved from the model/environment.
+    previous_state = {'attention': 0.5, 'compute': 0.5, 'metric': 0.0}
+    current_state = {'attention': 0.2, 'compute': 0.3, 'metric': 0.0}
+    previous_action = {'delta_attention': 0.05, 'delta_compute': 0.05, 'delta_metric': 0.0}
+    current_action = {'delta_attention': 0.03, 'delta_compute': 0.02, 'delta_metric': 0.0}
+
+    reward = CalculateDeepSleepReward(current_state, current_action, previous_state, previous_action, deep_sleep_params)
+    print("Deep Sleep Reward calculated:", reward)
+
+    # Simulate the training step:
+    save_checkpoint("deep_sleep_step")
+    # (… training operations would be performed here …)
+    save_checkpoint("deep_sleep_step_checkpoint")
+
+    play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+
+    input("Deep sleep training step completed. Press Enter to continue...")
+
+    return reward
+
+# --- End of Deep Sleep Training Functions ---
 
 if __name__ == '__main__':
     config = namedtuple("Config", [])()
