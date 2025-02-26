@@ -1,16 +1,19 @@
 import torch
 import torch.nn as nn
 import datetime
+import time
 from torch.nn import CrossEntropyLoss
 import torch.optim as optim
 from typing import Optional, List, Tuple, Any, Dict
 from NueralMemoryLayers import HierarchicalMemory, MemoryNode
 from OldCOCONUTUnused.StableCELoss import stable_cross_entropy_loss
 import typing
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import namedtuple
 from torch.nn import CrossEntropyLoss
+import torch.nn.functional as F
 
 Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
 MAX_N_LATENT = 8
@@ -420,29 +423,83 @@ class BinaryPatchingModule(nn.Module):
         return binary_mask, probs
 
 class PatchAggregator(nn.Module):
-    def __init__(self, input_dim, output_dim, pooling='mean'):
+    def __init__(self, input_dim, output_dim, pooling='mean', eos_detection_threshold=0.7, eos_pattern_length=3):
         """
         Aggregates contiguous latent states into patches based on binary boundaries.
         input_dim: Input dimension of latent states.
         output_dim: Projected output dimension (often equal to input_dim).
         pooling: Pooling method to combine states ('mean' or 'max').
+        eos_detection_threshold: Threshold for detecting EOS patterns in continuous thoughts.
+        eos_pattern_length: Number of consecutive states needed to confirm an EOS pattern.
         """
         super(PatchAggregator, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.pooling = pooling
         self.proj = nn.Linear(input_dim, output_dim)
+        
+        # EOS detection parameters
+        self.eos_detection_threshold = eos_detection_threshold
+        self.eos_pattern_length = eos_pattern_length
+        
+        # EOS pattern detector - learns to recognize end of thought patterns
+        self.eos_detector = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 2),
+            nn.ReLU(),
+            nn.Linear(input_dim // 2, 1),
+            nn.Sigmoid()
+        )
 
     def forward(self, latent_states, binary_mask):
         # latent_states: (batch, seq_len, input_dim)
         # binary_mask: (batch, seq_len, 1), where 1 indicates a patch boundary.
         batch_size, seq_len, _ = latent_states.shape
         patch_list = []
+        eos_indices = []  # Track indices where EOS markers are found
+        
+        # First, detect potential EOS markers using the dedicated detector
+        with torch.no_grad():
+            eos_scores = self.eos_detector(latent_states).squeeze(-1)  # (batch, seq_len)
+        
         for b in range(batch_size):
             current_patch = []
             patches = []
+            
+            # Track consecutive high EOS scores for pattern detection
+            consecutive_eos_count = 0
+            last_eos_idx = -1
+            
             for i in range(seq_len):
                 current_patch.append(latent_states[b, i])
+                
+                # Advanced EOS detection using both the dedicated detector and pattern recognition
+                current_eos_score = eos_scores[b, i].item()
+                
+                # Check for EOS pattern - consecutive high scores or significant pattern change
+                if current_eos_score > self.eos_detection_threshold:
+                    consecutive_eos_count += 1
+                    if consecutive_eos_count >= self.eos_pattern_length:
+                        # Found an EOS pattern
+                        eos_indices.append((b, i))
+                        last_eos_idx = i
+                else:
+                    # Reset consecutive count if score drops below threshold
+                    consecutive_eos_count = 0
+                
+                # Additional detection: Check for significant state transition patterns
+                if i >= 2:
+                    # Calculate state transition metrics
+                    prev_state = latent_states[b, i-1]
+                    current_state = latent_states[b, i]
+                    
+                    # Cosine similarity between consecutive states
+                    cos_sim = F.cosine_similarity(prev_state.unsqueeze(0), current_state.unsqueeze(0), dim=1).item()
+                    
+                    # Detect sharp transitions (low similarity) followed by stable states
+                    if cos_sim < 0.3 and current_eos_score > 0.5 and i != last_eos_idx:
+                        eos_indices.append((b, i))
+                        last_eos_idx = i
+                
                 if binary_mask[b, i, 0] == 1:
                     patch_tensor = torch.stack(current_patch, dim=0)  # (p, input_dim)
                     if self.pooling == 'mean':
@@ -453,6 +510,7 @@ class PatchAggregator(nn.Module):
                         pooled = patch_tensor[0]
                     patches.append(pooled)
                     current_patch = []  # Start a new patch.
+            
             if current_patch:
                 patch_tensor = torch.stack(current_patch, dim=0)
                 if self.pooling == 'mean':
@@ -462,9 +520,12 @@ class PatchAggregator(nn.Module):
                 else:
                     pooled = patch_tensor[0]
                 patches.append(pooled)
+            
             if len(patches) == 0:
                 patches.append(torch.zeros(self.input_dim, device=latent_states.device))
+            
             patch_list.append(torch.stack(patches))
+        
         # Limit patch sequences to MAX_N_LATENT for the batch.
         max_patches = MAX_N_LATENT
         limited_patches = []
@@ -475,9 +536,31 @@ class PatchAggregator(nn.Module):
                 pad = torch.zeros(max_patches - p.shape[0], self.input_dim, device=latent_states.device)
                 p = torch.cat([p, pad], dim=0)
             limited_patches.append(p)
+        
         patches_tensor = torch.stack(limited_patches, dim=0)  # (batch, MAX_N_LATENT, input_dim)
         patches_tensor = self.proj(patches_tensor)
-        return patches_tensor
+        
+        # Create eos_bounds tuple if EOS markers were found
+        eos_bounds = None
+        if eos_indices:
+            # Find the first and last EOS marker
+            first_eos = min(eos_indices, key=lambda x: x[1])
+            last_eos = max(eos_indices, key=lambda x: x[1])
+            
+            # Add context window around the EOS bounds for better transition
+            context_window = 2  # Number of tokens to include before/after the actual EOS
+            start_bound = max(0, first_eos[1] - context_window)
+            end_bound = min(seq_len - 1, last_eos[1] + context_window)
+            
+            eos_bounds = (start_bound, end_bound)
+            
+            # Log detection for debugging
+            if hasattr(self, 'log_eos_detection') and self.log_eos_detection:
+                print(f"EOS bounds detected: {eos_bounds}, scores at bounds: "
+                      f"{eos_scores[first_eos[0], start_bound].item():.3f} to "
+                      f"{eos_scores[last_eos[0], end_bound].item():.3f}")
+        
+        return patches_tensor, eos_bounds
 
 """
 COCONUT with Binary Dynamic Patches – Integrated Version
@@ -492,8 +575,567 @@ translates the processed patches into token IDs for readable output.
 
 # --- Integrated Model using Existing local_encoder for Binary Patch-to-Text Translation ---
 
+# --- Deep Sleep Training Functions Step 1 in Training ---
+
+def CalculateDeepSleepReward(current_state, action, previous_state, previous_action, deep_sleep_params):
+    """
+    Calculates the deep sleep reward based on the current state, current action,
+    the previous state and previous action using the provided hyperparameters.
+    """
+    target_attention = deep_sleep_params['target_attention']
+    target_compute = deep_sleep_params['target_compute']
+    lambda_attention = deep_sleep_params['lambda_attention']
+    lambda_compute = deep_sleep_params['lambda_compute']
+    lambda_smoothness = deep_sleep_params['lambda_smoothness']
+
+    current_attention = current_state['attention']
+    current_compute = current_state['compute']
+    previous_action_delta_a = previous_action['delta_attention']  # action assumed delta-based
+
+    reward = - (
+        lambda_attention * (current_attention - target_attention)**2 +
+        lambda_compute * (current_compute - target_compute)**2 +
+        lambda_smoothness * (action['delta_attention'] - previous_action_delta_a)**2
+    )
+    return reward
+
+def save_checkpoint(step_name, model=None):
+    import os, json, torch
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    checkpoint_dir = "model_save"
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+    # Save model checkpoint as a safetensor file if a model is provided; otherwise, save dummy data.
+    checkpoint_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}.safetensors")
+    if model is not None:
+        # In practice, one would use a dedicated safetensors library.
+        torch.save(model.state_dict(), checkpoint_filename)
+    else:
+        with open(checkpoint_filename, "w") as f:
+            f.write("Checkpoint data for " + step_name)
+    print("Checkpoint saved:", checkpoint_filename)
+    
+    # Create a config.json file with instructions for model inference and architecture details.
+    config_data = {
+        "checkpoint_file": checkpoint_filename,
+        "instructions": "To set up the COCONUT byte latent class model for inference, load the state_dict from this checkpoint file into your model and use the provided configuration parameters.",
+        "model_architecture": {
+            "model_type": "CoconutBinaryLatentModel",
+            "components": {
+                "continuous_model": "Transformer-based continuous thought generator",
+                "binary_patch_module": "Dynamic binary patching for latent states",
+                "patch_aggregator": "Groups latent states into coherent patches",
+                "latent_transformer": "Processes patch embeddings",
+                "local_encoder": "Translates latent patches to token IDs"
+            },
+            "sleep_system": {
+                "deep_sleep_params": {
+                    "target_attention": 0.1,
+                    "target_compute": 0.2,
+                    "lambda_attention": 1.0,
+                    "lambda_compute": 1.0,
+                    "lambda_smoothness": 0.5
+                },
+                "awakening_params": {
+                    "target_attention": 0.9,
+                    "target_compute": 0.9,
+                    "lambda_attention": 1.0,
+                    "lambda_compute": 1.0,
+                    "lambda_smoothness": 0.5
+                }
+            },
+            "additional_features": {
+                "dynamic_patching": "Entropy-based dynamic patching for efficient processing",
+                "consciousness_control": "Adjustable consciousness levels for resource management",
+                "emergency_override": "Emergency awakening capability for critical situations"
+            }
+        }
+    }
+    config_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}_config.json")
+    with open(config_filename, "w") as cf:
+        json.dump(config_data, cf, indent=4)
+    print("Config file saved:", config_filename)
+
+def play_sound(sound_file):
+    import subprocess, platform
+    try:
+        if platform.system() == "Linux":
+            subprocess.run(["aplay", sound_file])
+        elif platform.system() == "Darwin":  # macOS
+            subprocess.run(["afplay", sound_file])
+        elif platform.system() == "Windows":
+            import winsound
+            winsound.PlaySound(sound_file, winsound.SND_FILENAME)
+        print("Sound played:", sound_file)
+    except Exception as e:
+        print("Failed to play sound:", e)
+
+def deep_sleep_training():
+    print("Starting Deep Sleep Training Step")
+    # Define hyperparameters for deep sleep training
+    deep_sleep_params = {
+        'target_attention': 0.1,
+        'target_compute': 0.2,
+        'lambda_attention': 1.0,
+        'lambda_compute': 1.0,
+        'lambda_smoothness': 0.5
+    }
+    # Dummy values for demonstration – in practice these would be retrieved from the model/environment.
+    previous_state = {'attention': 0.5, 'compute': 0.5, 'metric': 0.0}
+    current_state = {'attention': 0.2, 'compute': 0.3, 'metric': 0.0}
+    previous_action = {'delta_attention': 0.05, 'delta_compute': 0.05, 'delta_metric': 0.0}
+    current_action = {'delta_attention': 0.03, 'delta_compute': 0.02, 'delta_metric': 0.0}
+
+    reward = CalculateDeepSleepReward(current_state, current_action, previous_state, previous_action, deep_sleep_params)
+    print("Deep Sleep Reward calculated:", reward)
+
+    # Simulate the training step:
+    save_checkpoint("deep_sleep_step")
+    # (… training operations would be performed here …)
+    save_checkpoint("deep_sleep_step_checkpoint")
+
+    play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+
+    input("Deep sleep training step completed. Press Enter to continue...")
+
+    return reward
+
+# --- Sleep and Awakening System ---
+class SleepAwakeningSystem:
+    def __init__(self, model, deep_sleep_params=None, awakening_params=None):
+        """
+        Initialize the Sleep and Awakening System.
+        
+        Args:
+            model: The LLM model to control
+            deep_sleep_params: Parameters for deep sleep (optional)
+            awakening_params: Parameters for awakening (optional)
+        """
+        self.model = model
+        self.deep_sleep_params = deep_sleep_params or {
+            'target_attention': 0.1,
+            'target_compute': 0.2,
+            'lambda_attention': 1.0,
+            'lambda_compute': 1.0,
+            'lambda_smoothness': 0.5
+        }
+        self.awakening_params = awakening_params or {
+            'target_attention': 0.9,
+            'target_compute': 0.9,
+            'lambda_attention': 1.0,
+            'lambda_compute': 1.0,
+            'lambda_smoothness': 0.5,
+            'emergency_reward': 10.0,
+            'emergency_confirmation_threshold': 3
+        }
+        
+        # State tracking
+        self.current_state = {'attention': 0.9, 'compute': 0.9, 'metric': 0.0}
+        self.previous_state = {'attention': 0.9, 'compute': 0.9, 'metric': 0.0}
+        self.previous_action = {'delta_attention': 0.0, 'delta_compute': 0.0, 'delta_metric': 0.0}
+        
+        # Sleep/wake status
+        self.is_sleeping = False
+        self.is_fully_shutdown = False
+        self.emergency_counter = 0
+        
+        # Q-learning parameters
+        self.q_table = {}  # State-action value function
+        self.learning_rate = 0.1
+        self.discount_factor = 0.9
+        self.epsilon = 0.1  # For epsilon-greedy action selection
+        
+        # Gating mechanism
+        self.attention_gate = nn.Parameter(torch.ones(1))
+        self.compute_gate = nn.Parameter(torch.ones(1))
+        
+        # Consciousness level control (0.0 to 1.0, where 1.0 is full consciousness)
+        self.consciousness_level = 1.0
+        self.consciousness_gate = nn.Parameter(torch.ones(1))
+        
+    def update_state(self, new_attention=None, new_compute=None, new_metric=None):
+        """Update the current state with new values."""
+        self.previous_state = self.current_state.copy()
+        
+        if new_attention is not None:
+            self.current_state['attention'] = new_attention
+        if new_compute is not None:
+            self.current_state['compute'] = new_compute
+        if new_metric is not None:
+            self.current_state['metric'] = new_metric
+            
+    def choose_action(self, state, is_emergency=False):
+        """
+        Choose an action using epsilon-greedy policy.
+        
+        Args:
+            state: Current state dictionary
+            is_emergency: Whether this is an emergency situation
+            
+        Returns:
+            action: Dictionary with delta values
+        """
+        if is_emergency:
+            # Emergency action to quickly wake up
+            return {
+                'delta_attention': max(0.9 - state['attention'], 0), #Need to fix Eos Bound to be sure that Eos is detected in the contineous thoughts to know when the model is done thinking.
+                'delta_compute': max(0.9 - state['compute'], 0),
+                'delta_metric': 0.0
+            }
+            
+        # Convert state to a hashable representation
+        state_key = self._state_to_key(state)
+        
+        # Epsilon-greedy action selection
+        if np.random.random() < self.epsilon:
+            # Explore: random action
+            return {
+                'delta_attention': np.random.uniform(0, 0.2),
+                'delta_compute': np.random.uniform(0, 0.2),
+                'delta_metric': np.random.uniform(0, 0.1)
+            }
+        else:
+            # Exploit: best known action
+            if state_key not in self.q_table:
+                self.q_table[state_key] = {}
+            
+            # If no actions have been tried yet, return a default action
+            if not self.q_table[state_key]:
+                return {
+                    'delta_attention': 0.1,
+                    'delta_compute': 0.1,
+                    'delta_metric': 0.0
+                }
+            
+            # Find the action with the highest Q-value
+            best_action_key = max(self.q_table[state_key], key=lambda k: self.q_table[state_key][k])
+            return self._key_to_action(best_action_key)
+    
+    def _state_to_key(self, state):
+        """Convert a state dictionary to a hashable key."""
+        return (round(state['attention'], 2), round(state['compute'], 2), round(state['metric'], 2))
+    
+    def _action_to_key(self, action):
+        """Convert an action dictionary to a hashable key."""
+        return (round(action['delta_attention'], 2), round(action['delta_compute'], 2), round(action['delta_metric'], 2))
+    
+    def _key_to_action(self, key):
+        """Convert a hashable key back to an action dictionary."""
+        return {
+            'delta_attention': key[0],
+            'delta_compute': key[1],
+            'delta_metric': key[2]
+        }
+    
+    def update_q_value(self, state, action, reward, next_state):
+        """
+        Update Q-value using Q-learning update rule.
+        
+        Args:
+            state: Current state dictionary
+            action: Action taken dictionary
+            reward: Reward received
+            next_state: Next state dictionary
+        """
+        state_key = self._state_to_key(state)
+        action_key = self._action_to_key(action)
+        next_state_key = self._state_to_key(next_state)
+        
+        # Initialize Q-values if needed
+        if state_key not in self.q_table:
+            self.q_table[state_key] = {}
+        if action_key not in self.q_table[state_key]:
+            self.q_table[state_key][action_key] = 0.0
+        
+        # Find max Q-value for next state
+        if next_state_key not in self.q_table:
+            self.q_table[next_state_key] = {}
+        max_next_q = max(self.q_table[next_state_key].values()) if self.q_table[next_state_key] else 0.0
+        
+        # Q-learning update
+        self.q_table[state_key][action_key] += self.learning_rate * (
+            reward + self.discount_factor * max_next_q - self.q_table[state_key][action_key]
+        )
+    
+    def apply_gating_mechanism(self, attention_tensor, compute_tensor):
+        """
+        Apply the gating mechanism to control attention, compute, and consciousness.
+        
+        Args:
+            attention_tensor: Tensor representing attention
+            compute_tensor: Tensor representing compute resources
+            
+        Returns:
+            gated_attention: Gated attention tensor
+            gated_compute: Gated compute tensor
+        """
+        gated_attention = attention_tensor * self.attention_gate
+        gated_compute = compute_tensor * self.compute_gate
+        
+        # Apply consciousness gating to both attention and compute
+        gated_attention = gated_attention * self.consciousness_gate
+        gated_compute = gated_compute * self.consciousness_gate
+        
+        return gated_attention, gated_compute
+    
+    def set_consciousness_level(self, level):
+        """
+        Manually set the consciousness level of the model.
+        This is only allowed to be triggered by the user, not by the model itself.
+        
+        Args:
+            level: Float between 0.0 and 1.0 representing the consciousness level
+                  (1.0 = full consciousness, 0.0 = minimal consciousness)
+        
+        Returns:
+            current_level: The new consciousness level
+        """
+        # Ensure level is within valid range
+        level = max(0.01, min(1.0, level))  # Never go completely to zero to avoid complete shutdown
+        
+        # Set the consciousness level
+        self.consciousness_level = level
+        
+        # Update the gates to reflect the new consciousness level
+        self.update_gates()
+        
+        print(f"Consciousness level set to: {level:.2f}")
+        return self.consciousness_level
+    
+    def update_gates(self):
+        """Update the gating mechanism based on current sleep state and consciousness level."""
+        if self.is_fully_shutdown:
+            # Fully shut off
+            self.attention_gate.data = torch.zeros_like(self.attention_gate)
+            self.compute_gate.data = torch.zeros_like(self.compute_gate)
+            self.consciousness_gate.data = torch.zeros_like(self.consciousness_gate)
+        elif self.is_sleeping:
+            # Reduced activity during sleep
+            self.attention_gate.data = torch.tensor([self.current_state['attention']])
+            self.compute_gate.data = torch.tensor([self.current_state['compute']])
+            self.consciousness_gate.data = torch.tensor([min(self.current_state['attention'], self.consciousness_level)])
+        else:
+            # Awake but consciousness may be manually adjusted
+            self.attention_gate.data = torch.ones_like(self.attention_gate)
+            self.compute_gate.data = torch.ones_like(self.compute_gate)
+            self.consciousness_gate.data = torch.tensor([self.consciousness_level])
+    
+    def check_emergency(self, emergency_signal=None):
+        """
+        Check if there's an emergency that requires immediate awakening.
+        
+        Args:
+            emergency_signal: External emergency signal (optional)
+            
+        Returns:
+            is_emergency: Boolean indicating if emergency override should be triggered
+        """
+        # Update emergency counter based on signal
+        if emergency_signal:
+            self.emergency_counter += 1
+        else:
+            self.emergency_counter = max(self.emergency_counter - 1, 0)
+        
+        # Check if emergency threshold is reached
+        return self.emergency_counter >= self.awakening_params['emergency_confirmation_threshold']
+    
+    def enter_deep_sleep(self):
+        """Initiate the deep sleep process."""
+        print("Initiating deep sleep process...")
+        self.is_sleeping = True
+        self.is_fully_shutdown = False
+        
+        # Store initial state for training
+        initial_state = self.current_state.copy()
+        
+        # Run deep sleep training loop
+        for episode in range(100):  # Number of episodes can be adjusted
+            # Reset state to initial state
+            self.current_state = initial_state.copy()
+            self.previous_state = initial_state.copy()
+            self.previous_action = {'delta_attention': 0.0, 'delta_compute': 0.0, 'delta_metric': 0.0}
+            
+            for step in range(20):  # Number of steps per episode
+                # Choose action
+                action = self.choose_action(self.current_state)
+                
+                # Apply action to get next state
+                next_state = {
+                    'attention': max(0.0, min(1.0, self.current_state['attention'] - action['delta_attention'])),
+                    'compute': max(0.0, min(1.0, self.current_state['compute'] - action['delta_compute'])),
+                    'metric': max(0.0, min(1.0, self.current_state['metric'] - action['delta_metric']))
+                }
+                
+                # Calculate reward
+                reward = self.calculate_deep_sleep_reward(
+                    next_state, action, self.current_state, self.previous_action
+                )
+                
+                # Update Q-value
+                self.update_q_value(self.current_state, action, reward, next_state)
+                
+                # Update state and action history
+                self.previous_action = action
+                self.previous_state = self.current_state
+                self.current_state = next_state
+                
+                # Update gates
+                self.update_gates()
+                
+                # Check if target sleep state is reached
+                if (abs(self.current_state['attention'] - self.deep_sleep_params['target_attention']) < 0.05 and
+                    abs(self.current_state['compute'] - self.deep_sleep_params['target_compute']) < 0.05):
+                    break
+            
+            # Print progress every 10 episodes
+            if episode % 10 == 0:
+                print(f"Deep sleep training episode {episode}, current state: {self.current_state}")
+        
+        # Final update to fully shut down if needed
+        if self.current_state['attention'] <= 0.1 and self.current_state['compute'] <= 0.1:
+            self.is_fully_shutdown = True
+            self.update_gates()
+            print("LLM has entered full shutdown mode.")
+        
+        # Save checkpoint
+        save_checkpoint("deep_sleep_final", self.model)
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+        
+        return self.current_state
+    
+    def awaken(self, emergency_override=False):
+        """
+        Awaken the model from sleep state.
+        
+        Args:
+            emergency_override: Whether to use emergency override
+            
+        Returns:
+            final_state: The final state after awakening
+        """
+        if not self.is_sleeping and not self.is_fully_shutdown:
+            print("Model is already awake.")
+            return self.current_state
+        
+        print(f"Initiating awakening process{' with emergency override' if emergency_override else ''}...")
+        
+        # Store initial state for training
+        initial_state = self.current_state.copy()
+        
+        # If emergency override, immediately set to awake state
+        if emergency_override:
+            self.current_state = {
+                'attention': self.awakening_params['target_attention'],
+                'compute': self.awakening_params['target_compute'],
+                'metric': 0.0
+            }
+            self.is_sleeping = False
+            self.is_fully_shutdown = False
+            self.update_gates()
+            
+            # Calculate and apply emergency reward for learning
+            emergency_reward = self.awakening_params['emergency_reward']
+            emergency_action = {
+                'delta_attention': self.awakening_params['target_attention'] - initial_state['attention'],
+                'delta_compute': self.awakening_params['target_compute'] - initial_state['compute'],
+                'delta_metric': 0.0
+            }
+            self.update_q_value(initial_state, emergency_action, emergency_reward, self.current_state)
+            
+            print("Emergency awakening completed.")
+            return self.current_state
+        
+        # Regular gradual awakening
+        for episode in range(100):  # Number of episodes can be adjusted
+            # Reset state to initial state
+            self.current_state = initial_state.copy()
+            self.previous_state = initial_state.copy()
+            self.previous_action = {'delta_attention': 0.0, 'delta_compute': 0.0, 'delta_metric': 0.0}
+            
+            for step in range(20):  # Number of steps per episode
+                # Check for emergency
+                if self.check_emergency():
+                    return self.awaken(emergency_override=True)
+                
+                # Choose action
+                action = self.choose_action(self.current_state)
+                
+                # Apply action to get next state
+                next_state = {
+                    'attention': max(0.0, min(1.0, self.current_state['attention'] + action['delta_attention'])),
+                    'compute': max(0.0, min(1.0, self.current_state['compute'] + action['delta_compute'])),
+                    'metric': max(0.0, min(1.0, self.current_state['metric'] + action['delta_metric']))
+                }
+                
+                # Calculate reward (negative of deep sleep reward, since we want to increase activity)
+                reward = -self.calculate_deep_sleep_reward(
+                    next_state, action, self.current_state, self.previous_action
+                )
+                
+                # Update Q-value
+                self.update_q_value(self.current_state, action, reward, next_state)
+                
+                # Update state and action history
+                self.previous_action = action
+                self.previous_state = self.current_state
+                self.current_state = next_state
+                
+                # Update gates
+                self.update_gates()
+                
+                # Check if target awake state is reached
+                if (abs(self.current_state['attention'] - self.awakening_params['target_attention']) < 0.05 and
+                    abs(self.current_state['compute'] - self.awakening_params['target_compute']) < 0.05):
+                    break
+            
+            # Print progress every 10 episodes
+            if episode % 10 == 0:
+                print(f"Awakening training episode {episode}, current state: {self.current_state}")
+        
+        # Final update
+        self.is_sleeping = False
+        self.is_fully_shutdown = False
+        self.update_gates()
+        
+        # Save checkpoint
+        save_checkpoint("awakening_final", self.model)
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+        
+        print("Awakening process completed.")
+        return self.current_state
+    
+    def calculate_deep_sleep_reward(self, current_state, action, previous_state, previous_action):
+        """
+        Calculate the deep sleep reward based on current and previous states and actions.
+        
+        Args:
+            current_state: Current state dictionary
+            action: Current action dictionary
+            previous_state: Previous state dictionary
+            previous_action: Previous action dictionary
+            
+        Returns:
+            reward: Deep sleep reward
+        """
+        return CalculateDeepSleepReward(
+            current_state, action, previous_state, previous_action, self.deep_sleep_params
+        )
+
+class Value(nn.Module):
+    """Value function for the RL algorithm."""
+    def __init__(self, hidden_size):
+        super().__init__()
+        self.value_net = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_size // 2, 1)
+        )
+    
+    def forward(self, state):
+        return self.value_net(state)
+
 class CoconutBinaryLatentModel(nn.Module):
-    def __init__(self, continuous_model, latent_transformer, local_encoder, input_dim, hidden_dim):
+    def __init__(self, continuous_model, latent_transformer,  MultiModalEncoder, input_dim, hidden_dim, initial_temperature: float = 1.0, surprise_threshold: float = 0.5, ):
         """
         continuous_model: Module that outputs continuous latent representations (continuous thought).
         latent_transformer: Module (e.g., from Binary Latent Transformer) that processes patch embeddings.
@@ -506,7 +1148,8 @@ class CoconutBinaryLatentModel(nn.Module):
         self.binary_patch_module = BinaryPatchingModule(input_dim, hidden_dim)
         self.patch_aggregator = PatchAggregator(input_dim, input_dim)
         self.latent_transformer = latent_transformer
-        self.local_encoder = local_encoder   # Reuse the local encoder for final text translation.
+        self.local_encoder =  MultiModalEncoder # Reuse the local encoder for final text translation.
+
         self.multi_encoder = MultiModalEncoder(
             vocab_size=256, 
             embed_dim=input_dim, 
@@ -523,11 +1166,71 @@ class CoconutBinaryLatentModel(nn.Module):
             ff_dim=128
         )
 
+        self.surprise_threshold = surprise_threshold
+        
+        # Initialize sleep and awakening system
+        self.sleep_system = SleepAwakeningSystem(self)
+
+    def forget_memories(self, hours_ago=24, agent_info_id=None):
+        import datetime
+        time = 0 #Need to grab time from the current system date time to save to the memory layer with the memory so that the time the memory occured is saved with the corresponding memory.
+        end_time = time.time()
+        start_time = end_time - (hours_ago * 3600)
+        self.memory_layer.forget_memories(start_time=start_time, end_time=end_time, agent_info_id=agent_info_id)
+
+    def _get_marker_embedding(self, marker_text, embed_dim, device):
+        """
+        Create an embedding for a marker text (like "<output>" or "/<output>").
+        
+        Args:
+            marker_text: The text of the marker
+            embed_dim: Embedding dimension
+            device: Device to create the tensor on
+            
+        Returns:
+            A tensor of shape (1, 1, embed_dim) representing the marker embedding
+        """
+        # Simple hash-based embedding for demonstration
+        marker_bytes = marker_text.encode('utf-8')
+        marker_hash = sum(marker_bytes) % 10000
+        
+        # Use the hash to seed a random generator for reproducibility
+        import numpy as np
+        rng = np.random.RandomState(marker_hash)
+        
+        # Generate a random embedding vector
+        embedding = torch.tensor(rng.normal(0, 0.02, embed_dim), dtype=torch.float32, device=device)
+        
+        # Normalize the embedding
+        embedding = F.normalize(embedding, p=2, dim=0)
+        
+        # Reshape to (1, 1, embed_dim)
+        return embedding.unsqueeze(0).unsqueeze(0)
+    
     def forward(self, x):
+        # Check if model is in full shutdown mode
+        if hasattr(self, 'sleep_system') and self.sleep_system.is_fully_shutdown:
+            # Return empty output if fully shut down
+            batch_size = x.size(0)
+            dummy_output = torch.zeros((batch_size, 1, 256), device=x.device)
+            return dummy_output, None
+        
         # Step 1: Generate continuous latent representations.
         latent_states = self.continuous_model(x)  # (batch, seq_len, input_dim)
+        
+        # Apply gating mechanisms (sleep and consciousness)
+        if hasattr(self, 'sleep_system'):
+            # Apply gating to latent states
+            attention_tensor = latent_states  # Assuming this represents attention
+            compute_tensor = latent_states    # Assuming this also affects compute resources
+            gated_attention, gated_compute = self.sleep_system.apply_gating_mechanism(
+                attention_tensor, compute_tensor
+            )
+            latent_states = gated_compute  # Use gated compute as the modified latent states
+        
         # Step 2: Compute binary patch boundary decisions.
         binary_mask, probs = self.binary_patch_module(latent_states)
+        
         # Step 3: Aggregate latent states into patches.
         patch_embeddings, eos_bounds = self.patch_aggregator(latent_states, binary_mask)
         
@@ -564,260 +1267,256 @@ class CoconutBinaryLatentModel(nn.Module):
         self.base_causallm.train()
     def eval(self):
         self.base_causallm.eval()
-
-# --- BinaryLatentTransformer ---
-class BinaryLatentTransformer(nn.Module):
-    def __init__(self, hidden_size: int, num_layers: int, num_heads: int, ff_dim: int, sensory_input_channels: int, config,
-                 max_states: Optional[int] = None, patch_size: int = 4, num_latent_states: int = 4,
-                 reflection_threshold: float = 0.5, state_history_size=5, initial_temperature: float = 1.0,
-                 b_star_n_star: int = 4,
-                 memory_layer: Optional[HierarchicalMemory] = None, surprise_threshold: float = 0.5,
-                 memory_influence_factor: float = 0.5, state_quality_threshold: float = 0.5,
-                 replacement_rate: float = 1e-4, decay_rate: float = 0.99, maturity_threshold: int = 100,
-                 vocab_size: int = 256, num_layers_enc: int = 2, window_size_enc: int = 3, num_layers_entropy_pred: int = 1):
-        super().__init__(config)
-        self.memory_layer = memory_layer if memory_layer is not None else HierarchicalMemory(
-            num_layers=4, root_memory_chunk_size=(hidden_size,), cache_capacity=10000
-        ).requires_grad_(False)
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.max_states = max_states
-        self.patch_size = patch_size
-        self.num_latent_states = num_latent_states
-        self.reflection_threshold = reflection_threshold
-        self.byte_embedding = nn.Embedding(vocab_size, hidden_size)
-        self.patch_encoder = nn.Linear(self.patch_size * hidden_size, hidden_size)
-        self.compression_enabled = max_states is not None
-        if self.compression_enabled:
-            self.tova_query = nn.Linear(hidden_size, hidden_size)
-            self.tova_key = nn.Linear(hidden_size, hidden_size)
-            self.tova_value = nn.Linear(hidden_size, hidden_size)
-        self.latent_mode = True
-        self.thought_conditioning = True
-        self.state_selector = nn.Linear(hidden_size, 1)
-        self.state_history_size = state_history_size
-        self.state_evaluator_fc = nn.Linear(hidden_size, 1)
-        self.reward_generator = nn.Linear(hidden_size, 1)
-        self.state_history_buffer = []
-        self.temperature = initial_temperature
-        self.b_star_n_star = b_star_n_star
-        self.current_step = 0
-        self.adaptation_interval = 500
-        self.evaluation_set_size = 600
-        self.exploration_batch_size = 10
-        self.exploration_batch = []
-        self.units_to_replace_count = {f'layer{i}': 0 for i in range(num_layers)}
-        self.unit_ages = {f'layer{i}': torch.zeros(num_heads, dtype=torch.int) for i in range(num_layers)}
-        self.prefrontal_cortex = PrefrontalCortex(hidden_size, num_layers, binary_latent_transformer=self)
-        self.value_function = Value(hidden_size)
-        self.surprise_threshold = surprise_threshold
-        self.memory_influence_factor = memory_influence_factor
-        self.state_quality_threshold = state_quality_threshold
-        self.exploration_data = None
-        self.replacement_rate = replacement_rate
-        self.decay_rate = decay_rate
-        self.maturity_threshold = maturity_threshold
-        self.units_to_replace_count = {f'layer{i}': 0 for i in range(num_layers)}
-        self.unit_ages = {f'layer{i}': torch.zeros(num_heads, dtype=torch.int) for i in range(num_layers)}
-        self.transformer_encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=num_heads,
-                                                                     dim_feedforward=ff_dim, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(self.transformer_encoder_layer, num_layers=num_layers)
-        self.local_decoder = LocalDecoder(config, input_dim=hidden_size, output_bytes_dim=vocab_size,
-                                          num_layers=3, num_heads=num_heads, ff_dim=ff_dim)
-        self.quality_predictor = nn.Linear(hidden_size, vocab_size)
         
-        # Initialize Audio ByteEntropyPredictor
-        audio_vocab_size = 256
-        audio_entropy_predictor = ByteEntropyPredictor(
-            vocab_size=audio_vocab_size, hidden_size=64, num_layers=1, num_heads=2, ff_dim=128
-        )
-        multimodal_encoder = MultiModalEncoder(
-            vocab_size=256, embed_dim=256, sonar_dim=512, patch_dim=256, audio_entropy_predictor=audio_entropy_predictor
-        )
-        self.entropy_predictor = ByteEntropyPredictor(
-            vocab_size=vocab_size, hidden_size=hidden_size // 2, num_layers=num_layers_entropy_pred,
-            num_heads=num_heads // 2, ff_dim=ff_dim // 2
-        )
-        self.local_encoder = LocalEncoder(
-            config, vocab_size=vocab_size, hidden_size=hidden_size, num_layers_enc=num_layers_enc,
-            num_heads=num_heads, ff_dim=ff_dim, window_size_enc=window_size_enc, entropy_predictor=self.entropy_predictor
-        )
-
-    def transformer_encoder(self, src, mask: Optional[torch.Tensor] = None, src_key_padding_mask: Optional[torch.Tensor] = None,
-                              past_key_values: Optional[Tuple[torch.Tensor]] = None, use_cache: bool = False):
-        if past_key_values is None or not use_cache:
-            output = self.transformer.encoder(src, mask=mask, src_key_padding_mask=src_key_padding_mask)
-            past_key_values = None
+    def sleep(self):
+        """
+        Manually put the model to sleep (graceful shutdown).
+        This can only be triggered by the user, not by the model itself.
+        
+        Returns:
+            sleep_state: The final state after entering deep sleep
+        """
+        if hasattr(self, 'sleep_system'):
+            print("User initiated sleep mode...")
+            return self.sleep_system.enter_deep_sleep()
         else:
-            output = self.transformer.encoder(src, mask=mask, src_key_padding_mask=src_key_padding_mask,
-                                              past_key_values=past_key_values, use_cache=use_cache)
-        TransformerEncoderLayerOutput = namedtuple("TransformerEncoderLayerOutput", ["last_hidden_state", "past_key_values"])
-        return TransformerEncoderLayerOutput(last_hidden_state=output, past_key_values=past_key_values)
-
-
-    def get_next_byte_probs(self, byte_sequence_segment):
-        try:
-            patch_representations_entropy = self.local_encoder(byte_sequence_segment)
-            encoder_output_entropy_output = self.transformer_encoder(patch_representations_entropy)
-            encoder_output_entropy = encoder_output_entropy_output.last_hidden_state
-            batch_size, seq_len, _ = encoder_output_entropy.shape
-            byte_sequence_input_entropy = torch.zeros((batch_size, seq_len), dtype=torch.long,
-                                                      device=encoder_output_entropy.device)
-            decoded_bytes_output_tensor = self.local_decoder(encoder_output_entropy, byte_sequence_input_entropy)
-            next_byte_probs = torch.softmax(decoded_bytes_output_tensor[:, -1, :], dim=-1)
-            return next_byte_probs
-        except Exception as e:
-            print(f"Error during entropy prediction: {e}")
+            print("Sleep system not initialized.")
             return None
-
-    def generate_binary_patches(self, input_ids, attention_mask, max_new_patches=16, output_embedding=False,
-                                  synced_gpus=False, eos_threshold=0.9, **kwargs):
-        self.gen_forward_cnt = 0
-        assert input_ids.shape[0] == 1, "only support batch_size == 1 now"
-        input_ids_gen = input_ids.clone()
-        generated_patches = []
-        patch_sizes_history = []
-        generated_byte_sequences = []
-        latent_thinking_mode = False
-        output_generation_mode = False
-        next_compute_range = (0, input_ids_gen.shape[1])
-        inputs_embeds = input_ids_gen
-        kv_cache = None
-        current_input_byte_sequence = b"".join([bytes([byte_id]) for byte_id in input_ids_gen[0].tolist()])
-        if self.eos_think_byte_sequence in current_input_byte_sequence:
-            print("Start of thinking phase <THINK_EOS> detected in input.")
-            latent_thinking_mode = True
-        for pass_idx in range(max_new_patches + MAX_N_LATENT):
-            patch_representations = self.local_encoder(inputs_embeds[:, next_compute_range[0]:next_compute_range[1]])
-            outputs = self.transformer_encoder(patch_representations, past_key_values=kv_cache, use_cache=True)
-            latent_output = outputs.last_hidden_state
-            kv_cache = outputs.past_key_values
-            next_compute_range = (next_compute_range[1], input_ids_gen.shape[1])
-            inputs_embeds = inputs_embeds
-            if pass_idx >= MAX_N_LATENT and inputs_embeds.shape[1] < input_ids_gen.shape[1] + max_new_patches:
-                binary_patch_output = latent_output[0, -1, :]
-                generated_patches.append(binary_patch_output.detach().cpu())
-                byte_embeddings_init_generate = torch.zeros_like(latent_output)
-                batch_size_gen, seq_len_gen, _ = latent_output.shape
-                byte_sequence_input_generate = torch.zeros((batch_size_gen, seq_len_gen), dtype=latent_output.device)
-                decoded_bytes_output_tensor = self.local_decoder(latent_output, byte_sequence_input_generate)
-                generated_byte_sequence = self.binary_patch_to_bytes(decoded_bytes_output_tensor[0, -1, :])
-                generated_byte_sequences.append(generated_byte_sequence)
-                accumulated_byte_sequence = b"".join(generated_byte_sequences)
-                if latent_thinking_mode and self.eos_think_end_byte_sequence in accumulated_byte_sequence:
-                    print("End of thinking phase </THINK_EOS> detected in generated output.")
-                    latent_thinking_mode = False
-                    output_generation_mode = True
-                if not output_generation_mode and self.eos_final_output_start_byte_sequence in accumulated_byte_sequence:
-                    print("Start of output generation <output> tag detected.")
-                    output_generation_mode = True
-                patch_size = len(generated_byte_sequence)
-                patch_sizes_history.append(patch_size)
-                print(f"Generated patch size: {patch_size} bytes")
-                if output_generation_mode and accumulated_byte_sequence.endswith(self.eos_final_output_end_byte_sequence):
-                    print("End of final output generation </output> tag detected, stopping generation.")
+    
+    def wake_up(self, emergency=False):
+        """
+        Manually wake up the model if it's in sleep mode.
+        This can only be triggered by the user, not by the model itself.
+        
+        Args:
+            emergency: Whether to use emergency override for immediate awakening
+            
+        Returns:
+            awake_state: The final state after awakening
+        """
+        if hasattr(self, 'sleep_system'):
+            if self.sleep_system.is_sleeping or self.sleep_system.is_fully_shutdown:
+                print("User initiated wake up sequence...")
+                return self.sleep_system.awaken(emergency_override=emergency)
+            else:
+                print("Model is already awake.")
+                return self.sleep_system.current_state
+        else:
+            print("Sleep system not initialized.")
+            return None
+    
+    def set_consciousness(self, level):
+        """
+        Manually set the consciousness level of the model.
+        This can only be triggered by the user, not by the model itself.
+        
+        Args:
+            level: Float between 0.0 and 1.0 representing the consciousness level
+                  (1.0 = full consciousness, 0.0 = minimal consciousness)
+        
+        Returns:
+            current_level: The new consciousness level
+        """
+        if hasattr(self, 'sleep_system'):
+            print("User adjusting consciousness level...")
+            return self.sleep_system.set_consciousness_level(level)
+        else:
+            print("Sleep system not initialized.")
+            return None
+    
+    def train_sleep_wake_mechanisms(self, num_episodes=100, steps_per_episode=20):
+        """
+        Explicitly train the sleep and wake mechanisms using reinforcement learning.
+        This allows the model to learn optimal policies for transitioning between
+        sleep and wake states before actually using these mechanisms in production.
+        
+        Args:
+            num_episodes: Number of training episodes for each mechanism
+            steps_per_episode: Number of steps per episode
+            
+        Returns:
+            training_results: Dictionary containing training metrics
+        """
+        if not hasattr(self, 'sleep_system'):
+            print("Sleep system not initialized.")
+            return None
+            
+        print("Starting training for sleep and wake mechanisms...")
+        results = {
+            'sleep': {'initial_state': None, 'final_state': None, 'episodes': []},
+            'wake': {'initial_state': None, 'final_state': None, 'episodes': []}
+        }
+        
+        # Train deep sleep mechanism
+        print("\n=== Training Deep Sleep Mechanism ===")
+        
+        # Store initial state
+        initial_sleep_state = self.sleep_system.current_state.copy()
+        results['sleep']['initial_state'] = initial_sleep_state
+        
+        # Temporarily set to awake state for training
+        self.sleep_system.is_sleeping = False
+        self.sleep_system.is_fully_shutdown = False
+        
+        # Save initial checkpoint before training begins
+        save_checkpoint("sleep_wake_training_start", self)
+        
+        # Track training progress for mid-training checkpoint
+        mid_training_point = num_episodes // 2
+        
+        for episode in range(num_episodes):
+            # Reset to initial state
+            self.sleep_system.current_state = initial_sleep_state.copy()
+            self.sleep_system.previous_state = initial_sleep_state.copy()
+            self.sleep_system.previous_action = {'delta_attention': 0.0, 'delta_compute': 0.0, 'delta_metric': 0.0}
+            
+            episode_rewards = []
+            
+            for step in range(steps_per_episode):
+                # Choose action
+                action = self.sleep_system.choose_action(self.sleep_system.current_state)
+                
+                # Apply action to get next state (for sleep, we decrease attention/compute)
+                next_state = {
+                    'attention': max(0.0, min(1.0, self.sleep_system.current_state['attention'] - action['delta_attention'])),
+                    'compute': max(0.0, min(1.0, self.sleep_system.current_state['compute'] - action['delta_compute'])),
+                    'metric': max(0.0, min(1.0, self.sleep_system.current_state['metric'] - action['delta_metric']))
+                }
+                
+                # Calculate reward
+                reward = self.sleep_system.calculate_deep_sleep_reward(
+                    next_state, action, self.sleep_system.current_state, self.sleep_system.previous_action
+                )
+                episode_rewards.append(reward)
+                
+                # Update Q-value
+                self.sleep_system.update_q_value(self.sleep_system.current_state, action, reward, next_state)
+                
+                # Update state and action history
+                self.sleep_system.previous_action = action
+                self.sleep_system.previous_state = self.sleep_system.current_state
+                self.sleep_system.current_state = next_state
+                
+                # Check if target sleep state is reached
+                if (abs(self.sleep_system.current_state['attention'] - self.sleep_system.deep_sleep_params['target_attention']) < 0.05 and
+                    abs(self.sleep_system.current_state['compute'] - self.sleep_system.deep_sleep_params['target_compute']) < 0.05):
                     break
-                if output_generation_mode:
-                    current_byte_sequence_for_patching = b"".join(generated_byte_sequences)[-512:]
-                    if current_byte_sequence_for_patching:
-                        dynamic_patches = entropy_patching_global_threshold(current_byte_sequence_for_patching, self.base_causallm)
-                        print(f"Dynamic patches generated: {len(dynamic_patches)}")
-                new_patch_embed = binary_patch_output.unsqueeze(0).unsqueeze(0)
-                inputs_embeds = torch.cat((inputs_embeds, new_patch_embed), dim=1)
-        if synced_gpus:
-            while self.gen_forward_cnt < max_new_patches + MAX_N_LATENT:
-                self.gen_forward_cnt += 1
-                _ = self.transformer_encoder(inputs_embeds)
-        final_byte_sequence = b"".join(generated_byte_sequences)
-        start_tag = self.eos_final_output_start_byte_sequence
-        end_tag = self.eos_final_output_end_byte_sequence
-        start_index = final_byte_sequence.find(start_tag)
-        end_index = final_byte_sequence.rfind(end_tag)
-        if start_index != -1 and end_index != -1 and start_index < end_index:
-            user_output_bytes = final_byte_sequence[start_index + len(start_tag):end_index]
-        else:
-            user_output_bytes = final_byte_sequence
-        if output_embedding:
-            return generated_patches, user_output_bytes
-        else:
-            return user_output_bytes
-
-    def binary_patch_to_bytes(self, decoded_bytes_output_tensor):
-        predicted_byte_index = torch.argmax(decoded_bytes_output_tensor).item()
-        generated_byte = bytes([predicted_byte_index])
-        return generated_byte
-
-    def forget_memories(self, hours_ago=24, agent_info_id=None):
-        import datetime
-        time = 0 #Need to grab time from the current system date time to save to the memory layer with the memory so that the time the memory occured is saved with the corresponding memory.
-        end_time = time.time()
-        start_time = end_time - (hours_ago * 3600)
-        self.memory_layer.forget_memories(start_time=start_time, end_time=end_time, agent_info_id=agent_info_id)
-
-    def train(self):
-        self.base_causallm.train()
-
-    def eval(self):
-        self.base_causallm.eval()
-
-class PrefrontalCortex(nn.Module):
-    def __init__(self, hidden_size, num_layers=3, binary_latent_transformer=None):
-        super().__init__()
-        self.hidden_size = hidden_size
-        self.binary_latent_transformer = binary_latent_transformer
-        self.metacognitive = MetacognitiveModule(hidden_size, hidden_size)
-    def forward(self, continuous_thought):
-        latent_states = continuous_thought
-        safety_report = self.metacognitive(latent_states, latent_states)
-        if safety_report['needs_reflection']:
-            corrected_states = safety_report['corrected_state']
-            self.binary_latent_transformer.memory_layer.store(corrected_states.detach(), tags=['safety_correction_latent'])
-            return corrected_states
-        return latent_states
-
-class MetacognitiveModule(nn.Module):
-    def __init__(self, hidden_dim, memory_dim):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.memory_dim = memory_dim
-        self.thought_monitor = nn.Linear(hidden_dim, 1)
-        self.memory_monitor = nn.Linear(memory_dim, 1)
-        self.reflection_net = nn.Sequential(
-            nn.Linear(hidden_dim + memory_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh()
-        )
-        self.error_detector = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Sigmoid()
-        )
-        self.correction_net = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-        self.reflection_memory = []
-        self.max_reflections = 5
-
-    def forward(self, continuous_thought, memory):
-        thought_score = torch.sigmoid(self.thought_monitor(continuous_thought))
-        memory_score = torch.sigmoid(self.memory_monitor(memory))
-        safety_flag = (thought_score + memory_score) / 2
-        combined = torch.cat([continuous_thought, memory], dim=-1)
-        reflection = self.reflection_net(combined)
-        error_prob = self.error_detector(reflection)
-        if len(self.reflection_memory) >= self.max_reflections:
-            self.reflection_memory.pop(0)
-        self.reflection_memory.append(reflection.detach())
-        corrected_state = continuous_thought
-        if error_prob > 0.5:
-            correction_input = torch.cat([continuous_thought, reflection], dim=-1)
-            corrected_state = self.correction_net(correction_input)
-        return {'safety_flag': safety_flag, 'reflection': reflection, 'error_prob': error_prob,
-                'corrected_state': corrected_state, 'needs_reflection': error_prob > 0.5}
+            
+            # Record episode results
+            results['sleep']['episodes'].append({
+                'episode': episode,
+                'final_state': self.sleep_system.current_state.copy(),
+                'avg_reward': sum(episode_rewards) / len(episode_rewards) if episode_rewards else 0,
+                'steps': step + 1
+            })
+            
+            # Print progress every 10 episodes
+            if episode % 10 == 0:
+                print(f"Sleep training episode {episode}, current state: {self.sleep_system.current_state}, avg reward: {results['sleep']['episodes'][-1]['avg_reward']:.4f}")
+            
+            # Save mid-training checkpoint
+            if episode == mid_training_point:
+                save_checkpoint("sleep_mechanism_mid_training", self)
+                print(f"Mid-training checkpoint saved at episode {episode}")
+        
+        # Record final sleep state
+        results['sleep']['final_state'] = self.sleep_system.current_state.copy()
+        
+        # Save checkpoint after sleep mechanism training
+        save_checkpoint("sleep_mechanism_complete", self)
+        
+        # Train awakening mechanism
+        print("\n=== Training Awakening Mechanism ===")
+        
+        # Store initial state (low attention/compute)
+        initial_wake_state = {
+            'attention': self.sleep_system.deep_sleep_params['target_attention'],
+            'compute': self.sleep_system.deep_sleep_params['target_compute'],
+            'metric': 0.0
+        }
+        results['wake']['initial_state'] = initial_wake_state
+        
+        # Temporarily set to sleep state for training
+        self.sleep_system.is_sleeping = True
+        self.sleep_system.is_fully_shutdown = False
+        
+        for episode in range(num_episodes):
+            # Reset to initial state
+            self.sleep_system.current_state = initial_wake_state.copy()
+            self.sleep_system.previous_state = initial_wake_state.copy()
+            self.sleep_system.previous_action = {'delta_attention': 0.0, 'delta_compute': 0.0, 'delta_metric': 0.0}
+            
+            episode_rewards = []
+            
+            for step in range(steps_per_episode):
+                # Choose action
+                action = self.sleep_system.choose_action(self.sleep_system.current_state)
+                
+                # Apply action to get next state (for wake, we increase attention/compute)
+                next_state = {
+                    'attention': max(0.0, min(1.0, self.sleep_system.current_state['attention'] + action['delta_attention'])),
+                    'compute': max(0.0, min(1.0, self.sleep_system.current_state['compute'] + action['delta_compute'])),
+                    'metric': max(0.0, min(1.0, self.sleep_system.current_state['metric'] + action['delta_metric']))
+                }
+                
+                # Calculate reward (negative of deep sleep reward, since we want to increase activity)
+                reward = -self.sleep_system.calculate_deep_sleep_reward(
+                    next_state, action, self.sleep_system.current_state, self.sleep_system.previous_action
+                )
+                episode_rewards.append(reward)
+                
+                # Update Q-value
+                self.sleep_system.update_q_value(self.sleep_system.current_state, action, reward, next_state)
+                
+                # Update state and action history
+                self.sleep_system.previous_action = action
+                self.sleep_system.previous_state = self.sleep_system.current_state
+                self.sleep_system.current_state = next_state
+                
+                # Check if target awake state is reached
+                if (abs(self.sleep_system.current_state['attention'] - self.sleep_system.awakening_params['target_attention']) < 0.05 and
+                    abs(self.sleep_system.current_state['compute'] - self.sleep_system.awakening_params['target_compute']) < 0.05):
+                    break
+            
+            # Record episode results
+            results['wake']['episodes'].append({
+                'episode': episode,
+                'final_state': self.sleep_system.current_state.copy(),
+                'avg_reward': sum(episode_rewards) / len(episode_rewards) if episode_rewards else 0,
+                'steps': step + 1
+            })
+            
+            # Print progress every 10 episodes
+            if episode % 10 == 0:
+                print(f"Wake training episode {episode}, current state: {self.sleep_system.current_state}, avg reward: {results['wake']['episodes'][-1]['avg_reward']:.4f}")
+            
+            # Save mid-training checkpoint for wake mechanism
+            if episode == mid_training_point:
+                save_checkpoint("wake_mechanism_mid_training", self)
+                print(f"Mid-training checkpoint saved at episode {episode}")
+        
+        # Record final wake state
+        results['wake']['final_state'] = self.sleep_system.current_state.copy()
+        
+        # Reset to normal awake state
+        self.sleep_system.is_sleeping = False
+        self.sleep_system.is_fully_shutdown = False
+        self.sleep_system.current_state = {
+            'attention': self.sleep_system.awakening_params['target_attention'],
+            'compute': self.sleep_system.awakening_params['target_compute'],
+            'metric': 0.0
+        }
+        self.sleep_system.update_gates()
+        
+        print("\nTraining completed. Sleep and wake mechanisms have been trained.")
+        
+        # Save final checkpoint
+        save_checkpoint("sleep_wake_training_complete", self)
+        
+        # Play sound to indicate training completion
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+        
+        return results
 
 
 class LocalDecoder(nn.Module):
@@ -884,106 +1583,41 @@ class VideoEncoderSimple(nn.Module):
         return (binary_tokens > 0.5).float()
 
 
-# --- Deep Sleep Training Functions ---
-
-def CalculateDeepSleepReward(current_state, action, previous_state, previous_action, deep_sleep_params):
-    """
-    Calculates the deep sleep reward based on the current state, current action,
-    the previous state and previous action using the provided hyperparameters.
-    """
-    target_attention = deep_sleep_params['target_attention']
-    target_compute = deep_sleep_params['target_compute']
-    lambda_attention = deep_sleep_params['lambda_attention']
-    lambda_compute = deep_sleep_params['lambda_compute']
-    lambda_smoothness = deep_sleep_params['lambda_smoothness']
-
-    current_attention = current_state['attention']
-    current_compute = current_state['compute']
-    previous_action_delta_a = previous_action['delta_attention']  # action assumed delta-based
-
-    reward = - (
-        lambda_attention * (current_attention - target_attention)**2 +
-        lambda_compute * (current_compute - target_compute)**2 +
-        lambda_smoothness * (action['delta_attention'] - previous_action_delta_a)**2
-    )
-    return reward
-
-def save_checkpoint(step_name, model=None):
-    import os, json, torch
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    checkpoint_dir = "checkpointLLMSaves"
-    if not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir)
-    # Save model checkpoint as a safetensor file if a model is provided; otherwise, save dummy data.
-    checkpoint_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}.safetensors")
-    if model is not None:
-        # In practice, one would use a dedicated safetensors library.
-        torch.save(model.state_dict(), checkpoint_filename)
-    else:
-        with open(checkpoint_filename, "w") as f:
-            f.write("Checkpoint data for " + step_name)
-    print("Checkpoint saved:", checkpoint_filename)
-    
-    # Create a config.json file with instructions for model inference.
-    config_data = {
-        "checkpoint_file": checkpoint_filename,
-        "instructions": "To set up the COCONUT byte latent class model for inference, load the state_dict from this checkpoint file into your model and use the provided configuration parameters."
-    }
-    config_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}_config.json")
-    with open(config_filename, "w") as cf:
-        json.dump(config_data, cf, indent=4)
-    print("Config file saved:", config_filename)
-
-def play_sound(sound_file):
-    import subprocess
-    try:
-        subprocess.run(["aplay", sound_file])
-        print("Sound played:", sound_file)
-    except Exception as e:
-        print("Failed to play sound:", e)
-
-def deep_sleep_training():
-    print("Starting Deep Sleep Training Step")
-    # Define hyperparameters for deep sleep training
-    deep_sleep_params = {
-        'target_attention': 0.1,
-        'target_compute': 0.2,
-        'lambda_attention': 1.0,
-        'lambda_compute': 1.0,
-        'lambda_smoothness': 0.5
-    }
-    # Dummy values for demonstration – in practice these would be retrieved from the model/environment.
-    previous_state = {'attention': 0.5, 'compute': 0.5, 'metric': 0.0}
-    current_state = {'attention': 0.2, 'compute': 0.3, 'metric': 0.0}
-    previous_action = {'delta_attention': 0.05, 'delta_compute': 0.05, 'delta_metric': 0.0}
-    current_action = {'delta_attention': 0.03, 'delta_compute': 0.02, 'delta_metric': 0.0}
-
-    reward = CalculateDeepSleepReward(current_state, current_action, previous_state, previous_action, deep_sleep_params)
-    print("Deep Sleep Reward calculated:", reward)
-
-    # Simulate the training step:
-    save_checkpoint("deep_sleep_step")
-    # (… training operations would be performed here …)
-    save_checkpoint("deep_sleep_step_checkpoint")
-
-    play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
-
-    input("Deep sleep training step completed. Press Enter to continue...")
-
-    return reward
-
 # --- End of Deep Sleep Training Functions ---
 
 if __name__ == '__main__':
     config = namedtuple("Config", [])()
-    blt_model = BinaryLatentTransformer(config=config, hidden_size=64, num_layers=2,
-                                        num_heads=4, ff_dim=128, sensory_input_channels=3, vocab_size=256)
-    coconut_model = Coconut(base_causallm=blt_model)
-    input_byte_sequence = b"<THINK_EOS>What is the capital of France?</THINK_EOS><output>The capital is Paris.</output>"
+    
+    # Create a dummy continuous model for testing
+    continuous_model = nn.Sequential(
+        nn.Linear(256, 64),
+        nn.ReLU()
+    )
+    
+    # Create the CoconutBinaryLatentModel
+    coconut_model = CoconutBinaryLatentModel(
+        continuous_model=continuous_model,
+        latent_transformer=CoconutBinaryLatentModel,
+        local_encoder=CoconutBinaryLatentModel.multiencoder,
+        input_dim=64,
+        hidden_dim=32
+    )
+    
+    # Test input
+    input_byte_sequence = b"<eos>What is the capital of France?/<eos><output>The capital is Paris.</output>"
     input_ids_example = torch.tensor([[byte for byte in input_byte_sequence]], dtype=torch.long)
-    generated_output_bytes = coconut_model.generate_binary_patches(input_ids_example, None)
-    try:
-        decoded_output = generated_output_bytes.decode('utf-8')
-        print(f"Generated Output: {decoded_output}")
-    except UnicodeDecodeError:
-        print(f"Generated Output (raw bytes): {generated_output_bytes}")
+    
+    # Process the input through the CoconutBinaryLatentModel
+    print("Processing input through CoconutBinaryLatentModel...")
+    output_binary, eos_bounds = coconut_model(input_ids_example)
+    print(f"Output shape: {output_binary.shape}, EOS bounds: {eos_bounds}")
+    
+    # Demonstrate sleep functionality
+    print("\nDemonstrating deep sleep mode...")
+    sleep_state = coconut_model.sleep_system.enter_deep_sleep()
+    print(f"Sleep state: {sleep_state}")
+    
+    # Demonstrate emergency awakening
+    print("\nDemonstrating emergency awakening...")
+    awake_state = coconut_model.sleep_system.awaken(emergency_override=True)
+    print(f"Awake state: {awake_state}")
