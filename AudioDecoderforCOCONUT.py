@@ -1,5 +1,9 @@
 #Audio Decoder that needs to be placed into the COCONUTWLatentThinking.py file when training is finished. 
-# Need to place after the video encoder class but before the SONARtoBytePatch class.
+# Need to place by the other decoders. Decoder needs to decode both audio and text so both decoders need to work at once. 
+
+import torch
+import torch.nn as nn
+from TOVACompression import TOVACompression
 
 # --- AudioDecoder for generating audio from latent representations ---
 class AudioDecoder(nn.Module):
@@ -7,9 +11,12 @@ class AudioDecoder(nn.Module):
     AudioDecoder based on CosyVoice 2's flow matching approach.
     Converts latent representations back into audio waveforms using
     conditional flow matching with binary dynamic patches.
+    
+    Features TOVA compression for efficient memory usage during long audio generation.
     """
     def __init__(self, input_dim, hidden_dim, mel_dim=80, sample_rate=24000, 
-                 num_flow_steps=10, cfg_strength=0.7, chunk_size=15):
+                 num_flow_steps=10, cfg_strength=0.7, chunk_size=15,
+                 use_tova=True, cache_max_size=512, head_weight_strategy="weighted", num_heads=8):
         super(AudioDecoder, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -18,6 +25,27 @@ class AudioDecoder(nn.Module):
         self.num_flow_steps = num_flow_steps
         self.cfg_strength = cfg_strength
         self.chunk_size = chunk_size
+        
+        # TOVA compression settings
+        self.use_tova = use_tova
+        self.cache_max_size = cache_max_size
+        self.head_weight_strategy = head_weight_strategy
+        self.num_heads = num_heads
+        
+        # Initialize TOVA compressor if enabled
+        if use_tova:
+            self.tova_compressor = TOVACompression(
+                cache_max_size=cache_max_size,
+                layer_based=True,
+                head_weight_strategy=head_weight_strategy,
+                num_heads=num_heads
+            )
+        
+        # TOVA-related fields for KV caching
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        self.token_entropies = []
         
         # Upsampling to match Mel spectrogram frame rate (typically 50Hz)
         self.lookahead_conv = nn.Conv1d(
@@ -195,6 +223,117 @@ class AudioDecoder(nn.Module):
         # Simple Euler step for ODE solving
         dt = 1.0 / self.num_flow_steps
         return x_t + noise_pred * dt
+        
+    def enable_kv_caching(self):
+        """Enable KV caching in attention modules for TOVA compression"""
+        if not self.use_tova:
+            return
+            
+        # Enable caching in UNet encoder and decoder blocks
+        for block in self.unet.encoder_blocks:
+            if hasattr(block, 'attn') and hasattr(block.attn, 'forward'):
+                # Store original forward method
+                if not hasattr(block.attn, '_original_forward'):
+                    block.attn._original_forward = block.attn.forward
+                    
+                    # Create reference to self for closure
+                    audio_decoder_ref = self
+                    
+                    # Override forward method to track attention weights and cache KV
+                    def new_forward(self_attn, query, key, value, key_padding_mask=None, 
+                                   need_weights=True, attn_mask=None):
+                        # Call original method with need_weights=True to get attention weights
+                        attn_output, attn_weights = self_attn._original_forward(
+                            query, key, value, 
+                            key_padding_mask=key_padding_mask,
+                            need_weights=True,
+                            attn_mask=attn_mask
+                        )
+                        
+                        # Store attention weights for TOVA
+                        audio_decoder_ref.attention_weights = attn_weights
+                        
+                        # Update KV cache
+                        if audio_decoder_ref.use_tova:
+                            if audio_decoder_ref.k_cache is None:
+                                audio_decoder_ref.k_cache = key
+                                audio_decoder_ref.v_cache = value
+                            else:
+                                # Append to cache
+                                audio_decoder_ref.k_cache = torch.cat([audio_decoder_ref.k_cache, key], dim=1)
+                                audio_decoder_ref.v_cache = torch.cat([audio_decoder_ref.v_cache, value], dim=1)
+                        
+                        return attn_output, attn_weights
+                    
+                    # Bind new method to attention module
+                    import types
+                    block.attn.forward = types.MethodType(new_forward, block.attn)
+        
+        print("KV caching enabled for TOVA compression in AudioDecoder")
+    
+    def reset_cache(self):
+        """Reset KV cache and entropy tracking"""
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        self.token_entropies = []
+    
+    def apply_tova_compression(self):
+        """Apply TOVA compression to the KV cache if it exceeds the maximum size"""
+        if not self.use_tova or self.k_cache is None or self.v_cache is None:
+            return
+            
+        # Check if compression is needed
+        if self.k_cache.size(1) <= self.cache_max_size:
+            return
+            
+        # Apply basic TOVA compression if no entropy data
+        if not self.token_entropies:
+            self.k_cache, self.v_cache = self.tova_compressor(
+                self.attention_weights,
+                self.k_cache,
+                self.v_cache
+            )
+        else:
+            # Apply entropy-enhanced TOVA compression
+            # Combine all token entropy values
+            all_entropies = torch.cat(self.token_entropies)
+            
+            # Ensure entropy tensor matches KV cache size
+            if all_entropies.size(0) < self.k_cache.size(1):
+                # Pad with mean entropy
+                mean_entropy = all_entropies.mean()
+                padding = torch.full((self.k_cache.size(1) - all_entropies.size(0),), 
+                                    mean_entropy, device=all_entropies.device)
+                all_entropies = torch.cat([all_entropies, padding])
+            
+            # Apply compression with entropy data
+            self.k_cache, self.v_cache = self.tova_compressor.compress_with_entropy(
+                self.attention_weights,
+                self.k_cache,
+                self.v_cache,
+                all_entropies[:self.k_cache.size(1)]
+            )
+            
+        print(f"Applied TOVA compression. New KV cache size: {self.k_cache.size(1)}")
+    
+    def get_tova_stats(self):
+        """Get statistics about TOVA compression"""
+        if not self.use_tova:
+            return {"tova_enabled": False}
+            
+        stats = self.tova_compressor.get_stats()
+        
+        # Add additional decoder-specific stats
+        if self.k_cache is not None:
+            stats["current_kv_cache_size"] = self.k_cache.size(1)
+            stats["max_kv_cache_size"] = self.cache_max_size
+            stats["kv_cache_memory_mb"] = (
+                self.k_cache.element_size() * self.k_cache.nelement() +
+                self.v_cache.element_size() * self.v_cache.nelement()
+            ) / (1024 * 1024)
+            
+        return stats
 
 
 class ChunkAwareFlowMatchingUNet(nn.Module):
@@ -408,29 +547,6 @@ class MelToWaveformVocoder(nn.Module):
         
         return waveform
 
-class SONARtoBytePatch(nn.Module):
-    """
-    Projects SONAR embeddings into the binary latent transformer space.
-    Uses a linear projection, optionally applying a SONAR encoder to compute embeddings.
-    If an encoder is provided, it processes the input and averages over the sequence dimension.
-    Otherwise, it assumes the input is already in embedding space.
-    """
-    def __init__(self, sonar_dim, patch_dim, encoder=None):
-        super(SONARtoBytePatch, self).__init__()
-        self.sonar_dim = sonar_dim
-        self.patch_dim = patch_dim
-        self.projection = nn.Linear(sonar_dim, patch_dim)
-        self.encoder = encoder
-
-    def forward(self, sonar_input):
-        if self.encoder is not None:
-            sonar_output = self.encoder(sonar_input)
-            # Average over the sequence dimension of the encoded output.
-            embeddings = sonar_output.encoded_seqs.mean(dim=1)
-        else:
-            embeddings = sonar_input
-        return self.projection(embeddings)
-
 # --- Switching Gate Attention Module ---
 class SwitchingGateAttention(nn.Module):
     def __init__(self, patch_dim, num_modalities):
@@ -447,11 +563,3 @@ class SwitchingGateAttention(nn.Module):
         gating_logits = self.gate_linear(x)
         gating_weights = torch.softmax(gating_logits, dim=-1)
         return gating_weights
-
-# --- MultiModalEncoder ---
-class MultiModalEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim, sonar_dim, patch_dim, audio_entropy_predictor):
-        super(MultiModalEncoder, self).__init__()
-        self.audio_encoder = AudioEncoder(embed_dim, patch_dim, audio_entropy_predictor)
-        self.text_encoder = LocalEncoder(...)  # Placeholder for text encoder
-        # For video, use our enhance

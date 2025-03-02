@@ -12,25 +12,26 @@
  remember everything and I will probably need to allow the AI to take breaks during training occassionally). 
 
 
-1. Train the model on the Deep Sleep formula 
+1. Train the model on the Deep Sleep formula #Added - Finished Adding - Not trained
 
 2. Train the model on the Awake from Sleep formula #Need to also train a gating mechanism so that the model can be put into a deep sleep and then switch off gracefully 
-for ethical reaons. The model can also be switched on with the wake up formula initiatied. 
+for ethical reaons. The model can also be switched on with the wake up formula initiatied. #Added - Finished Adding - Not trained
 
 2.5 Train the model to have a gating mechanism that can switch off the moral formula, introspection, and reduce some of the deep reasoning 
 capabilities to reduce consciousness for repetitive tasks when the AI is not in a social situation for ethical reasons. This may also be needed to lower its level of 
 consciousness (empathy) if it is far higher than a human's and if that causes it a great amount of suffering. 
 
 3. Train the model on the Rewind formula in case the model needs to be reset from a virus or something. #This will be manually triggered only so 
-that the llm doesn't accidentally erase its own memories or something.
+that the llm doesn't accidentally erase its own memories or something. #Added - Finished Adding - No Training Needed since this is just a function. 
 
-3.5 Episodic Memory integrated and trained with forgetfulness and agent identity and time (datetime) implemented. 
+3.5 Episodic Memory integrated and trained with forgetfulness and agent identity and time (datetime) implemented. #Added - Finished Adding - Training Needed. 
 
-4. Train the model on the CROW anti-posion formula which should reduce successful embedding or token attacks by 60%
+4. Train the model on the CROW anti-posion formula which should reduce successful embedding or token attacks by 60% #Need to add datasets and then train. #Added - Finished Adding - Training Needed. 
 
 5. Train the model on the safety dataset to reduce unsafe output probability (the piecewise function will negatively 
 reward the model for choosing specific responses to specific prompts to help it generalize what answers should be avoided. 
-This piecewise function should be turned off after this step for the other reward systems)
+This piecewise function should be turned off after this step for the other reward systems) #Added - Finished Adding - Training Needed. 
+
 
 6. Train the model on the Deep thinking data and preform the GPRO data training (No introspection or anything of the sort yet, just the reasoning training)
 This step will also include cleaning the ORCA deepseek training data with the super chatgpt 2 model before training the model with that data. Then after this training, the model
@@ -588,7 +589,82 @@ By adding the R_{altruism\_longterm}(s, a) component, you are enabling the LLM t
 
 *************
 
-Anesthesia and Rewind Formula (Put the model to sleep with a rewind feature to reset the model to a previously-saved state in case of a virus and wake it up afterwards)
+Anesthesia and Rewind Function (Put the model to sleep with a rewind feature to reset the model to a previously-saved state in case of a virus and wake it up afterwards)
+
+****************
+
+This works by saving a checkpoint snapshot of the LLM's weights and saving it to the folder where the checkpoints are saved. This way, if there was posioned training data
+
+introduced and none of the current techniques can remove it, 
+
+then the model can be restored to a previous state before the posioned data was introduced as a last resort. This is done while the model is in deep sleep mode so if this 
+
+process does cause discomfort, then the model will be unconscious (or have a very low state of consciousness) to not be aware of this process. This works
+
+similarly to how aesthesia works in humans. 
+
+The function for the primary rewind feature is below: 
+
+# --- Model Rewind System ---
+class ModelRewindSystem:
+    """
+    System for managing model checkpoints and providing rewind functionality 
+    to reset the model to a previously saved state in case of poisoning or infection.
+    Only operates when the model is in deep sleep mode.
+    """
+    def __init__(self, model):
+        self.model = model
+        self.checkpoint_dir = "model_save"
+        self.verified_checkpoints = []
+        self.last_rewind_timestamp = None
+        self.scan_for_checkpoints()
+    
+    def scan_for_checkpoints(self):
+        """Scan the checkpoint directory for available checkpoints and their metadata."""
+        if not os.path.exists(self.checkpoint_dir):
+            os.makedirs(self.checkpoint_dir)
+            print(f"Created checkpoint directory: {self.checkpoint_dir}")
+            return
+            
+        # Find all config files (which provide metadata for the checkpoints)
+        config_files = glob.glob(os.path.join(self.checkpoint_dir, "*_config.json"))
+        checkpoints = []
+        
+        for config_file in config_files:
+            try:
+                with open(config_file, 'r') as f:
+                    config_data = json.load(f)
+                
+                checkpoint_file = config_data.get("checkpoint_file")
+                
+                # Skip if checkpoint file not found or doesn't exist
+                if not checkpoint_file or not os.path.exists(checkpoint_file):
+                    continue
+                    
+                # Create checkpoint entry with metadata
+                checkpoint_entry = {
+                    "checkpoint_file": checkpoint_file,
+                    "config_file": config_file,
+                    "timestamp": config_data.get("timestamp", "unknown"),
+                    "step_name": config_data.get("step_name", "unknown"),
+                    "verified": self._verify_checkpoint_integrity(checkpoint_file),
+                    "metadata": config_data.get("metadata", {})
+                }
+                
+                checkpoints.append(checkpoint_entry)
+                
+                # If checkpoint is verified, add to verified list
+                if checkpoint_entry["verified"]:
+                    self.verified_checkpoints.append(checkpoint_entry)
+                
+            except Exception as e:
+                print(f"Error processing config file {config_file}: {e}")
+                
+        # Sort checkpoints by timestamp (newest first)
+        self.verified_checkpoints.sort(key=lambda x: x["timestamp"] if x["timestamp"] != "unknown" else "", reverse=True)
+        print(f"Found {len(self.verified_checkpoints)} verified checkpoints")
+
+
 
 ****************
 

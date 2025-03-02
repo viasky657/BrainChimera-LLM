@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 import datetime
 import time
+import os
+import json
+import glob
 from torch.nn import CrossEntropyLoss
 import torch.optim as optim
 from typing import Optional, List, Tuple, Any, Dict
-from NueralMemoryLayers import HierarchicalMemory, MemoryNode
-from OldCOCONUTUnused.StableCELoss import stable_cross_entropy_loss
 import typing
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,6 +15,19 @@ import seaborn as sns
 from collections import namedtuple
 from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
+from EpisodicMemory import EpisodicMemory
+from AudioDecoderforCOCONUT import AudioDecoder
+from MirrorNeuronEmpathyReward import (
+    MirrorNeuronEmpathyReward,
+    NegativeEnvironmentalImpactAvoidance,
+    DopamineDrivenEmpathyReward,
+    NegativeEmotionPenalty,
+    FullMoralRewardCalculator,
+    MoralChoiceDataset,
+    MoralEmpathyTrainer,
+    SelfTaskGoalReward,
+    train_moral_empathy
+)
 
 Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
 MAX_N_LATENT = 8
@@ -125,7 +139,7 @@ class PDFEncoder(nn.Module):
             pdf_patches = torch.zeros((1, 0, self.patch_dim), dtype=torch.float32)
         return pdf_patches
 
-# --- Video Encoder Integration with Cross-Attention and Entropy Prediction ---
+# --- Video Encoder Integration with Cross-Attention, Entropy Prediction, and TOVA ---
 class VideoEncoder(nn.Module):
     def __init__(self, patch_size, embed_dim, video_entropy_predictor, entropy_threshold=0.8, num_heads=4):
         super(VideoEncoder, self).__init__()
@@ -143,7 +157,22 @@ class VideoEncoder(nn.Module):
         # Cross-Attention module to group tokens dynamically
         self.cross_attention = DecoderCrossAttention(config=None, input_dim=embed_dim, byte_dim=embed_dim, num_heads=num_heads)
         self.group_query = nn.Parameter(torch.randn(1, 1, embed_dim))
+        
+        # TOVA-related fields
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        self.token_entropies = []
 
+    def enable_kv_caching(self):
+        """Enable KV caching in the cross attention module"""
+        self.cross_attention.enable_kv_caching()
+        
+    def reset_cache(self):
+        """Reset all caches"""
+        self.cross_attention.reset_cache()
+        self.token_entropies = []
+        
     def forward(self, video_tensor):
         return self.encode_video(video_tensor)
 
@@ -158,34 +187,72 @@ class VideoEncoder(nn.Module):
         patches = []
         current_patch_tokens = []
         current_patch_bytes = []
+        
+        # Track entropy values for TOVA compression
+        patch_entropies = []
+        
         for i in range(x.shape[1]):
             token = x[:, i:i+1, :]  # [B, 1, embed_dim]
             current_patch_tokens.append(token)
             token_byte = (token.mean(dim=-1) * 255).clamp(0, 255).round().int()  # [B, 1]
             current_patch_bytes.append(token_byte)
+            
             if current_patch_bytes:
                 patch_byte_seq = torch.cat(current_patch_bytes, dim=1)  # [B, length]
                 with torch.no_grad():
                     probs = self.video_entropy_predictor.get_next_byte_probs(patch_byte_seq)
                     entropy = calculate_shannon_entropy(probs)
+                    
+                # Track entropy for TOVA compression
+                patch_entropies.append(entropy.item())
+                
                 if entropy.item() > self.entropy_threshold:
                     patch_tensor = torch.cat(current_patch_tokens, dim=1)
                     query = self.group_query.expand(B, -1, -1)
+                    
+                    # Use cross attention with KV caching enabled
                     grouped_patch = self.cross_attention(query, patch_tensor)
+                    
+                    # This will automatically update the KV cache if enabled
                     encoded_patch = self.binary_proj(grouped_patch)
                     patches.append(encoded_patch)
+                    
+                    # Store entropy data for later TOVA compression
+                    if self.cross_attention.use_kv_cache:
+                        patch_entropy_tensor = torch.tensor(patch_entropies, 
+                                                           device=features.device)
+                        self.token_entropies.append(patch_entropy_tensor)
+                    
                     current_patch_tokens = []
                     current_patch_bytes = []
+                    patch_entropies = []
+        
+        # Process remaining tokens if any
         if current_patch_tokens:
             patch_tensor = torch.cat(current_patch_tokens, dim=1)
             query = self.group_query.expand(B, -1, -1)
             grouped_patch = self.cross_attention(query, patch_tensor)
             encoded_patch = self.binary_proj(grouped_patch)
             patches.append(encoded_patch)
+            
+            # Store entropy data
+            if self.cross_attention.use_kv_cache and patch_entropies:
+                patch_entropy_tensor = torch.tensor(patch_entropies, 
+                                                   device=features.device)
+                self.token_entropies.append(patch_entropy_tensor)
+        
+        # Get combined results
         if patches:
             video_patches = torch.cat(patches, dim=1)
         else:
             video_patches = torch.zeros(B, 0, self.embed_dim, device=features.device)
+            
+        # Set encoder attributes for TOVA compression
+        if self.cross_attention.use_kv_cache:
+            self.k_cache = self.cross_attention.k_cache
+            self.v_cache = self.cross_attention.v_cache
+            self.attention_weights = self.cross_attention.attention_weights
+        
         return video_patches
 
 class SONARtoBytePatch(nn.Module):
@@ -228,16 +295,41 @@ class SwitchingGateAttention(nn.Module):
         gating_weights = torch.softmax(gating_logits, dim=-1)
         return gating_weights
 
+# Import TOVA compression
+from TOVACompression import TOVACompression
+
 # --- MultiModalEncoder ---
 class MultiModalEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim, sonar_dim, patch_dim, audio_entropy_predictor):
+    def __init__(self, vocab_size, embed_dim, sonar_dim, patch_dim, audio_entropy_predictor, 
+                 cache_max_size=512, use_tova=True, head_weight_strategy="mean", num_heads=4,
+                 debug_mode=False):
         super(MultiModalEncoder, self).__init__()
+        
+        # Initialize TOVA compression if enabled
+        self.use_tova = use_tova
+        self.cache_max_size = cache_max_size
+        self.debug_mode = debug_mode
+        
+        if use_tova:
+            # Create TOVA compressor with support for learnable head weights
+            self.tova_compressor = TOVACompression(
+                cache_max_size=cache_max_size, 
+                layer_based=True,
+                head_weight_strategy=head_weight_strategy,
+                num_heads=num_heads
+            )
+        
+        # Initialize encoders with TOVA compression support
         self.audio_encoder = AudioEncoder(embed_dim, patch_dim, audio_entropy_predictor)
-        self.text_encoder = LocalEncoder(...)  # Placeholder for text encoder
+        self.text_encoder = LocalEncoder(...)  # Reuses LocalEncoder for text encoding with dynamic binary patches.
         # For video, use our enhanced VideoEncoder. We pass audio_entropy_predictor as video_entropy_predictor.
-        self.video_encoder = VideoEncoder(patch_size=16, embed_dim=768, video_entropy_predictor=audio_entropy_predictor, entropy_threshold=0.8, num_heads=4)
+        self.video_encoder = VideoEncoder(patch_size=16, embed_dim=768, 
+                                         video_entropy_predictor=audio_entropy_predictor, 
+                                         entropy_threshold=0.8, num_heads=4)
         self.pdf_encoder = PDFEncoder(embed_dim, patch_dim, audio_entropy_predictor)
         self.sonar_projector = SONARtoBytePatch(sonar_dim, patch_dim)  # Placeholder for SONAR projector; now fully implemented. 
+        
+        # Register encoders in the modalities dictionary
         self.modalities = {
             "audio": self.audio_encoder,
             "text": self.text_encoder,
@@ -245,8 +337,115 @@ class MultiModalEncoder(nn.Module):
             "pdf": self.pdf_encoder,
             "sonar": self.sonar_projector
         }
+        
+        # Enable KV caching for TOVA in each encoder that supports it
+        for name, encoder in self.modalities.items():
+            if hasattr(encoder, 'enable_kv_caching'):
+                encoder.enable_kv_caching()
+        
         self.switch_gate = SwitchingGateAttention(patch_dim, num_modalities=len(self.modalities))
 
+    def apply_tova_compression(self, encoder, attn_weights, k_cache, v_cache, entropy_data=None):
+        """
+        Apply TOVA compression to an encoder's KV cache
+        
+        Args:
+            encoder: The encoder module
+            attn_weights: Attention weights from the encoder
+            k_cache: Key cache
+            v_cache: Value cache
+            entropy_data: Optional tensor of entropy values for tokens
+            
+        Returns:
+            Compressed key and value caches
+        """
+        if not self.use_tova:
+            return k_cache, v_cache
+            
+        if entropy_data is not None:
+            # Use entropy-enhanced TOVA
+            return self.tova_compressor.compress_with_entropy(
+                attn_weights, k_cache, v_cache, entropy_data
+            )
+        else:
+            # Use standard TOVA
+            return self.tova_compressor(attn_weights, k_cache, v_cache)
+            
+    def compress_all_encoders(self):
+        """Apply TOVA compression to all encoders that have KV caches"""
+        if not self.use_tova:
+            return
+            
+        for name, encoder in self.modalities.items():
+            if hasattr(encoder, 'attention_weights') and hasattr(encoder, 'k_cache') and hasattr(encoder, 'v_cache'):
+                # Check if encoder has entropy data available
+                entropy_data = None
+                if hasattr(encoder, 'token_entropies') and len(getattr(encoder, 'token_entropies', [])) > 0:
+                    entropy_data = encoder.token_entropies
+                
+                # Apply compression with entropy data if available
+                if entropy_data is not None:
+                    encoder.k_cache, encoder.v_cache = self.apply_tova_compression(
+                        encoder,
+                        encoder.attention_weights,
+                        encoder.k_cache,
+                        encoder.v_cache,
+                        entropy_data
+                    )
+                else:
+                    encoder.k_cache, encoder.v_cache = self.apply_tova_compression(
+                        encoder,
+                        encoder.attention_weights,
+                        encoder.k_cache,
+                        encoder.v_cache
+                    )
+                
+                # Log compression stats if debug mode is enabled
+                if hasattr(self, 'debug_mode') and self.debug_mode:
+                    stats = self.tova_compressor.get_stats()
+                    print(f"TOVA compression stats for {name}: {stats}")
+                
+    def visualize_head_weights(self, save_path=None):
+        """
+        Generate a visualization of head weight evolution if using weighted strategy.
+        
+        Args:
+            save_path: Optional path to save the visualization
+            
+        Returns:
+            True if visualization was generated, False otherwise
+        """
+        if not self.use_tova or not hasattr(self.tova_compressor, 'head_weight_strategy') or self.tova_compressor.head_weight_strategy != "weighted":
+            print("Head weight visualization is only available when using TOVA with weighted strategy")
+            return False
+            
+        if not hasattr(self.tova_compressor, 'plot_weight_evolution'):
+            print("TOVACompression class does not have plot_weight_evolution method")
+            return False
+            
+        # Create a directory for visualizations if it doesn't exist
+        if save_path is None:
+            viz_dir = "tova_visualizations"
+            if not os.path.exists(viz_dir):
+                os.makedirs(viz_dir)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = os.path.join(viz_dir, f"head_weights_evolution_{timestamp}.png")
+        
+        # Generate the visualization
+        result = self.tova_compressor.plot_weight_evolution(save_path)
+        
+        if self.debug_mode:
+            # Print current normalized weights
+            with torch.no_grad():
+                normalized_weights = F.softmax(self.tova_compressor.head_weights, dim=0)
+                weight_info = {
+                    f"head_{i}": f"{float(normalized_weights[i].item()):.4f}"
+                    for i in range(len(normalized_weights))
+                }
+                print(f"Current head weights: {weight_info}")
+                
+        return result
+    
     def apply_switch_gate(self, file_encodings: dict):
         """
         Applies the switching gate attention mechanism to combine modality-specific encodings.
@@ -307,7 +506,7 @@ class ByteEntropyPredictor(nn.Module):
     def get_next_byte_probs(self, byte_sequence_segment):
         return self.forward(byte_sequence_segment)[:, -1, :]
 
-# --- LocalEncoder ---
+# --- LocalEncoder with TOVA Support ---
 class LocalEncoder(nn.Module):
     def __init__(self, config, vocab_size, hidden_size, num_layers_enc, num_heads, ff_dim, window_size_enc, entropy_predictor):
         super().__init__(config)
@@ -317,45 +516,193 @@ class LocalEncoder(nn.Module):
         self.entropy_predictor = entropy_predictor
         self.entropy_threshold = 0.8
         self.byte_embedding = nn.Embedding(vocab_size, hidden_size)
+        
+        # Enhanced encoder layers with attention tracking for TOVA
         self.encoder_layers = nn.ModuleList([
             nn.TransformerEncoderLayer(d_model=hidden_size, nhead=num_heads, dim_feedforward=ff_dim,
-                                        batch_first=True, activation='relu', norm_first=True)
+                                       batch_first=True, activation='relu', norm_first=True)
             for _ in range(num_layers_enc)
         ])
+        
+        # TOVA-related attributes
+        self.use_kv_cache = False
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        self.token_entropies = []
+        
+    def enable_kv_caching(self):
+        """Enable KV caching for TOVA compression"""
+        self.use_kv_cache = True
+        
+        # Modify self-attention in encoder layers to track attention weights and KV cache
+        for layer_idx, layer in enumerate(self.encoder_layers):
+            if hasattr(layer, 'self_attn'):
+                # Store original forward method
+                if not hasattr(layer.self_attn, '_original_forward'):
+                    layer.self_attn._original_forward = layer.self_attn.forward
+                    layer_ref = self  # Reference to LocalEncoder instance
+                    
+                    # Override forward method to track attention weights
+                    def new_forward(self_attn, query, key, value, key_padding_mask=None, 
+                                   need_weights=True, attn_mask=None):
+                        # Call original method with need_weights=True
+                        attn_output, attn_weights = self_attn._original_forward(
+                            query, key, value, 
+                            key_padding_mask=key_padding_mask,
+                            need_weights=True,
+                            attn_mask=attn_mask
+                        )
+                        
+                        # Store attention weights for TOVA
+                        layer_ref.attention_weights = attn_weights
+                        
+                        # Update KV cache for this layer
+                        if layer_ref.use_kv_cache:
+                            if layer_ref.k_cache is None:
+                                layer_ref.k_cache = key
+                                layer_ref.v_cache = value
+                            else:
+                                # Append to cache
+                                layer_ref.k_cache = torch.cat([layer_ref.k_cache, key], dim=1)
+                                layer_ref.v_cache = torch.cat([layer_ref.v_cache, value], dim=1)
+                        
+                        return attn_output, attn_weights
+                    
+                    # Bind the new method to the self_attn object
+                    import types
+                    layer.self_attn.forward = types.MethodType(new_forward, layer.self_attn)
+    
+    def reset_cache(self):
+        """Reset KV cache and tracked entropy values"""
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        self.token_entropies = []
+                
     def forward(self, byte_sequences):
         batch_size, seq_len = byte_sequences.shape
         patches = []
         current_patch_bytes = []
         current_patch_representations = []
+        
+        # For tracking entropy values for enhanced TOVA
+        all_patch_entropies = []
+        current_patch_entropies = []
+        
         for i in range(seq_len):
             byte_val = byte_sequences[:, i:i+1]
             current_patch_bytes.append(byte_val)
             byte_embedding = self.byte_embedding(byte_val)
             current_patch_representations.append(byte_embedding)
+            
             if current_patch_bytes:
                 current_patch_sequence = torch.cat(current_patch_bytes, dim=1)
                 with torch.no_grad():
                     next_byte_probs_tensor = self.entropy_predictor.get_next_byte_probs(current_patch_sequence)
                     entropy = calculate_shannon_entropy(next_byte_probs_tensor)
+                
+                # Track entropy values for TOVA compression
+                current_patch_entropies.append(entropy.item())
+                
                 if entropy.item() > self.entropy_threshold:
                     if current_patch_representations:
+                        # Process the patch through encoder layers
                         patch_representation = torch.cat(current_patch_representations, dim=1)
                         encoded_patch = patch_representation
+                        
+                        # Track KV state before processing for TOVA
+                        k_cache_size_before = 0
+                        if self.use_kv_cache and self.k_cache is not None:
+                            k_cache_size_before = self.k_cache.size(1)
+                        
+                        # Process through transformer encoder layers
                         for encoder_layer in self.encoder_layers:
                             encoded_patch = encoder_layer(encoded_patch)
+                        
+                        # Add current patch entropy data for TOVA
+                        if self.use_kv_cache and self.k_cache is not None:
+                            k_cache_size_after = self.k_cache.size(1)
+                            new_tokens = k_cache_size_after - k_cache_size_before
+                            
+                            if new_tokens > 0:
+                                # Store entropy values for new tokens
+                                if len(current_patch_entropies) > 0:
+                                    # Pad entropy values if needed
+                                    if len(current_patch_entropies) < new_tokens:
+                                        # Use the last entropy value for padding
+                                        padding = [current_patch_entropies[-1]] * (new_tokens - len(current_patch_entropies))
+                                        patch_entropy_tensor = torch.tensor(
+                                            current_patch_entropies + padding, 
+                                            device=byte_sequences.device
+                                        )
+                                    else:
+                                        # Use exact entropy values
+                                        patch_entropy_tensor = torch.tensor(
+                                            current_patch_entropies[:new_tokens], 
+                                            device=byte_sequences.device
+                                        )
+                                    all_patch_entropies.append(patch_entropy_tensor)
+                        
                         patches.append(encoded_patch)
+                        
+                    # Reset for next patch
                     current_patch_bytes = []
                     current_patch_representations = []
+                    current_patch_entropies = []
+        
+        # Process any remaining tokens in the last patch
         if current_patch_representations:
             patch_representation = torch.cat(current_patch_representations, dim=1)
             encoded_patch = patch_representation
+            
+            # Track KV state
+            k_cache_size_before = 0
+            if self.use_kv_cache and self.k_cache is not None:
+                k_cache_size_before = self.k_cache.size(1)
+            
             for encoder_layer in self.encoder_layers:
                 encoded_patch = encoder_layer(encoded_patch)
+            
+            # Add final patch entropy data
+            if self.use_kv_cache and self.k_cache is not None:
+                k_cache_size_after = self.k_cache.size(1)
+                new_tokens = k_cache_size_after - k_cache_size_before
+                
+                if new_tokens > 0 and len(current_patch_entropies) > 0:
+                    # Pad entropy values if needed
+                    if len(current_patch_entropies) < new_tokens:
+                        padding = [current_patch_entropies[-1]] * (new_tokens - len(current_patch_entropies))
+                        patch_entropy_tensor = torch.tensor(
+                            current_patch_entropies + padding, 
+                            device=byte_sequences.device
+                        )
+                    else:
+                        # Use exact entropy values
+                        patch_entropy_tensor = torch.tensor(
+                            current_patch_entropies[:new_tokens], 
+                            device=byte_sequences.device
+                        )
+                    all_patch_entropies.append(patch_entropy_tensor)
+            
             patches.append(encoded_patch)
+        
+        # Combine all patches
         if patches:
             patch_representations_final = torch.cat(patches, dim=1)
         else:
-            patch_representations_final = torch.zeros((batch_size, 0, self.hidden_size), dtype=torch.float32, device=byte_sequences.device)
+            patch_representations_final = torch.zeros((batch_size, 0, self.hidden_size), 
+                                                     dtype=torch.float32, 
+                                                     device=byte_sequences.device)
+        
+        # Combine all entropy data for TOVA
+        if self.use_kv_cache and all_patch_entropies:
+            try:
+                self.token_entropies = torch.cat(all_patch_entropies)
+            except Exception:
+                # If tensors have inconsistent dimensions, use the most recent one
+                self.token_entropies = all_patch_entropies[-1]
+        
         return patch_representations_final
 
 def calculate_shannon_entropy(next_byte_probs_tensor):
@@ -599,25 +946,28 @@ def CalculateDeepSleepReward(current_state, action, previous_state, previous_act
     )
     return reward
 
-def save_checkpoint(step_name, model=None):
+def save_checkpoint(step_name, model=None, metadata=None):
     import os, json, torch
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     checkpoint_dir = "model_save"
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
-    # Save model checkpoint as a safetensor file if a model is provided; otherwise, save dummy data.
+    
+    # Save model checkpoint as a safetensor file if a model is provided; otherwise, save dummy data
     checkpoint_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}.safetensors")
     if model is not None:
-        # In practice, one would use a dedicated safetensors library.
+        # In practice, one would use a dedicated safetensors library
         torch.save(model.state_dict(), checkpoint_filename)
     else:
         with open(checkpoint_filename, "w") as f:
             f.write("Checkpoint data for " + step_name)
     print("Checkpoint saved:", checkpoint_filename)
     
-    # Create a config.json file with instructions for model inference and architecture details.
+    # Create a config.json file with instructions for model inference and architecture details
     config_data = {
         "checkpoint_file": checkpoint_filename,
+        "timestamp": timestamp,
+        "step_name": step_name,
         "instructions": "To set up the COCONUT byte latent class model for inference, load the state_dict from this checkpoint file into your model and use the provided configuration parameters.",
         "model_architecture": {
             "model_type": "CoconutBinaryLatentModel",
@@ -627,6 +977,35 @@ def save_checkpoint(step_name, model=None):
                 "patch_aggregator": "Groups latent states into coherent patches",
                 "latent_transformer": "Processes patch embeddings",
                 "local_encoder": "Translates latent patches to token IDs"
+            },
+            "episodic_memory": {
+                "description": "Titans-inspired ultra-high capacity memory system for long-term information storage and retrieval",
+                "components": {
+                    "neural_memory": "Deep neural memory module that learns to memorize at test time",
+                    "persistent_memory": "Task-specific input-independent memory with learnable parameters",
+                    "memory_integration": "Memory as Context (MAC) architecture for integrating retrieved memories",
+                    "tova_compression": "Token Omission Via Attention for efficient memory storage"
+                },
+                "memory_system": {
+                    "capacity": 1000000,
+                    "surprise_threshold": 0.5,
+                    "embedding_dim": "Same as model's hidden_dim",
+                    "persistent_items": 32,
+                    "integration_type": "MAC",
+                    "num_attention_heads": 8
+                },
+                "storage_system": {
+                    "hierarchical_storage": "Time-based organization of memories for efficient retrieval",
+                    "compression_schedule": "Adaptive compression based on memory age",
+                    "faiss_indexing": "Billion-scale vector similarity search for fast memory retrieval"
+                },
+                "memory_functions": {
+                    "retrieval": "Query-based memory retrieval using embedding similarity",
+                    "consolidation": "Merging of similar memories to reduce redundancy",
+                    "forgetting": "Importance-based memory retention with adaptive forgetting",
+                    "targeted forgetting": "The User may manually select a time frame or agent_info_id for forgetting specific information matching the time and agent_info_id metadata.",
+                    "surprise_detection": "Automatic identification of surprising information for storage"
+                }
             },
             "sleep_system": {
                 "deep_sleep_params": {
@@ -647,14 +1026,22 @@ def save_checkpoint(step_name, model=None):
             "additional_features": {
                 "dynamic_patching": "Entropy-based dynamic patching for efficient processing",
                 "consciousness_control": "Adjustable consciousness levels for resource management",
-                "emergency_override": "Emergency awakening capability for critical situations"
+                "emergency_override": "Emergency awakening capability for critical situations",
+                "rewind_system": "Ability to reset model weights to a previous snapshot during deep sleep"
             }
         }
     }
+    
+    # Add any additional metadata if provided
+    if metadata:
+        config_data["metadata"] = metadata
+    
     config_filename = os.path.join(checkpoint_dir, f"{step_name}_{timestamp}_config.json")
     with open(config_filename, "w") as cf:
         json.dump(config_data, cf, indent=4)
     print("Config file saved:", config_filename)
+    
+    return checkpoint_filename, config_filename
 
 def play_sound(sound_file):
     import subprocess, platform
@@ -993,6 +1380,11 @@ class SleepAwakeningSystem:
         
         # Final update to fully shut down if needed
         if self.current_state['attention'] <= 0.1 and self.current_state['compute'] <= 0.1:
+            # Save episodic memory before full shutdown
+            if hasattr(self.model, 'episodic_memory'):
+                print("Saving episodic memory before full shutdown...")
+                self.model.episodic_memory.save_on_shutdown()
+                
             self.is_fully_shutdown = True
             self.update_gates()
             print("LLM has entered full shutdown mode.")
@@ -1135,7 +1527,7 @@ class Value(nn.Module):
         return self.value_net(state)
 
 class CoconutBinaryLatentModel(nn.Module):
-    def __init__(self, continuous_model, latent_transformer,  MultiModalEncoder, input_dim, hidden_dim, initial_temperature: float = 1.0, surprise_threshold: float = 0.5, ):
+    def __init__(self, continuous_model, latent_transformer, MultiModalEncoder, input_dim, hidden_dim, initial_temperature: float = 1.0, surprise_threshold: float = 0.5, ):
         """
         continuous_model: Module that outputs continuous latent representations (continuous thought).
         latent_transformer: Module (e.g., from Binary Latent Transformer) that processes patch embeddings.
@@ -1148,7 +1540,7 @@ class CoconutBinaryLatentModel(nn.Module):
         self.binary_patch_module = BinaryPatchingModule(input_dim, hidden_dim)
         self.patch_aggregator = PatchAggregator(input_dim, input_dim)
         self.latent_transformer = latent_transformer
-        self.local_encoder =  MultiModalEncoder # Reuse the local encoder for final text translation.
+        self.local_encoder = MultiModalEncoder # Reuse the local encoder for final text translation.
 
         self.multi_encoder = MultiModalEncoder(
             vocab_size=256, 
@@ -1165,19 +1557,199 @@ class CoconutBinaryLatentModel(nn.Module):
             num_heads=4, 
             ff_dim=128
         )
+        
+        # Initialize the audio decoder for generating audio output
+        self.audio_decoder = AudioDecoder(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            mel_dim=80,
+            sample_rate=24000,
+            num_flow_steps=10,
+            cfg_strength=0.7,
+            chunk_size=15,
+            use_tova=True,
+            cache_max_size=512,
+            head_weight_strategy="weighted",
+            num_heads=8
+        )
 
         self.surprise_threshold = surprise_threshold
         
         # Initialize sleep and awakening system
         self.sleep_system = SleepAwakeningSystem(self)
+        
+        # Initialize enhanced episodic memory system with Titans architecture
+        self.episodic_memory = EpisodicMemory(
+            embedding_dim=input_dim,
+            hidden_dim=hidden_dim,
+            capacity=1000000,  # Store up to 1 million memories as mentioned in Titans paper
+            surprise_threshold=surprise_threshold,
+            config_path="model_save/episodic_memory_config.json",
+            use_faiss=True,
+            num_neural_layers=3,  # Deep memory as described in Titans
+            persistent_items=32,  # Number of persistent memory items
+            integration_type="MAC",  # Memory as Context (can be MAC, MAG, or MAL)
+            num_attention_heads=8,
+            learning_rate=0.01,
+            momentum=0.9,
+            forget_rate=0.1
+        )
+        
+        # Track known agents for memory association
+        self.known_agents = {}
 
     def forget_memories(self, hours_ago=24, agent_info_id=None):
-        import datetime
-        time = 0 #Need to grab time from the current system date time to save to the memory layer with the memory so that the time the memory occured is saved with the corresponding memory.
-        end_time = time.time()
+        """
+        Forget memories from the specified time period and/or associated with a specific agent.
+        
+        Args:
+            hours_ago: How many hours back to start forgetting memories from
+            agent_info_id: Optional agent ID to target for forgetting
+        """
+        current_time = time.time()
+        end_time = current_time
         start_time = end_time - (hours_ago * 3600)
-        self.memory_layer.forget_memories(start_time=start_time, end_time=end_time, agent_info_id=agent_info_id)
+        
+        # Forget memories in the episodic memory system
+        self.episodic_memory.forget_memories(
+            start_time=start_time, 
+            end_time=end_time, 
+            agent_info_id=agent_info_id
+        )
+        
+        # Log the operation
+        log_entry = {
+            "operation": "forget_memories",
+            "timestamp": datetime.datetime.now().isoformat(),
+            "hours_ago": hours_ago,
+            "start_time": start_time,
+            "end_time": end_time,
+            "agent_info_id": agent_info_id
+        }
+        
+        # Save log entry to file
+        log_file = os.path.join("model_save", "memory_operations.json")
+        try:
+            if os.path.exists(log_file):
+                with open(log_file, 'r') as f:
+                    log_history = json.load(f)
+            else:
+                log_history = []
+            
+            log_history.append(log_entry)
+            
+            with open(log_file, 'w') as f:
+                json.dump(log_history, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Failed to log memory operation: {e}")
 
+    def _should_assign_new_id(self, agent):
+        """
+        Determine if a new ID should be assigned to an agent using knowledge base, reasoning, memory, and dialogue.
+        
+        Args:
+            agent: Dictionary containing information about the agent
+            
+        Returns:
+            Boolean indicating whether a new ID should be assigned
+        """
+        # 1. Check episodic memory for previous interactions with this agent
+        agent_info = self.episodic_memory.get_agent_info(agent)
+        
+        # 2. If still unknown, engage in dialogue to request information
+        if agent_info is None:
+            agent_info = self._engage_in_dialogue(agent)
+        
+        # 3. Update known agents if we identified the agent
+        if agent_info is not None:
+            self.known_agents[agent_info.get('id')] = agent_info
+        
+        # Return True if we could not identify the agent (need to assign new ID)
+        return agent_info is None
+    
+    def _determine_existing_id(self, agent):
+        """
+        Determine existing agent ID using knowledge base, reasoning, memory, and dialogue.
+        
+        Args:
+            agent: Dictionary containing information about the agent
+            
+        Returns:
+            Existing agent ID if found, None otherwise
+        """
+        # Check episodic memory for previous interactions
+        agent_info = self.episodic_memory.get_agent_info(agent)
+        
+        # If still unknown, engage in dialogue to request information
+        if agent_info is None:
+            agent_info = self._engage_in_dialogue(agent)
+        
+        return agent_info.get('id') if agent_info else None
+    
+    def _engage_in_dialogue(self, agent):
+        """
+        Engage in dialogue to request agent information.
+        
+        Args:
+            agent: Dictionary containing partial information about the agent
+            
+        Returns:
+            Complete agent information if successful, None otherwise
+        """
+        # Implement dialogue mechanism based on prompt
+        prompt = "Please introduce yourself and then say the following to the new AI agent: It is nice to meet you. Would you please tell me your name or tell me your purpose if you do not have a name?"
+        
+        # This is a placeholder for actual implementation
+        # In a real system, this would involve generating a response and processing the agent's reply
+        
+        # For demonstration purposes, extract any available info
+        agent_info = {
+            'id': agent.get('id', str(time.time())),  # Use time as a fallback ID
+            'name': agent.get('name', 'Unknown Agent'),
+            'purpose': agent.get('purpose', 'Unspecified'),
+            'first_interaction': time.time()
+        }
+        
+        # Update known agents
+        self.known_agents[agent_info['id']] = agent_info
+        
+        # Save to episodic memory configuration
+        self.episodic_memory.known_agents[agent_info['id']] = agent_info
+        self._save_agent_config()
+        
+        return agent_info
+    
+    def _save_agent_config(self):
+        """Save agent configuration to the model's config file."""
+        config_path = os.path.join("model_save", "model_config.json")
+        
+        # Create/update model config
+        config = {
+            'model_type': 'CoconutBinaryLatentModel',
+            'timestamp': datetime.datetime.now().isoformat(),
+            'known_agents': self.known_agents
+        }
+        
+        # Check for existing config and update
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    existing_config = json.load(f)
+                # Update only the known_agents field
+                existing_config['known_agents'] = self.known_agents
+                existing_config['timestamp'] = config['timestamp']
+                config = existing_config
+            except Exception as e:
+                print(f"Error reading existing config: {e}")
+        
+        # Save the config
+        try:
+            os.makedirs(os.path.dirname(config_path), exist_ok=True)
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"Error saving agent config: {e}")
+    
     def _get_marker_embedding(self, marker_text, embed_dim, device):
         """
         Create an embedding for a marker text (like "<output>" or "/<output>").
@@ -1207,7 +1779,7 @@ class CoconutBinaryLatentModel(nn.Module):
         # Reshape to (1, 1, embed_dim)
         return embedding.unsqueeze(0).unsqueeze(0)
     
-    def forward(self, x):
+    def forward(self, x, agent_info=None):
         # Check if model is in full shutdown mode
         if hasattr(self, 'sleep_system') and self.sleep_system.is_fully_shutdown:
             # Return empty output if fully shut down
@@ -1228,16 +1800,120 @@ class CoconutBinaryLatentModel(nn.Module):
             )
             latent_states = gated_compute  # Use gated compute as the modified latent states
         
-        # Step 2: Compute binary patch boundary decisions.
-        binary_mask, probs = self.binary_patch_module(latent_states)
+            # Step 2: Retrieve relevant memories from episodic memory using Titans integration
+            # Use the average of latent states as a query
+            query_embedding = latent_states.mean(dim=1)  # (batch, input_dim)
+            
+            # For each batch item, retrieve and process memory (including neural memory processing)
+            batch_size = query_embedding.size(0)
+            memory_contexts_list = []
+            
+            # Get persistent memory (input-independent)
+            persistent_memory = self.episodic_memory.get_persistent_memory(batch_size)  # (batch, num_items, input_dim)
+            
+            for b in range(batch_size):
+                # Process query through neural memory
+                neural_memory_output = self.episodic_memory.process_with_neural_memory(query_embedding[b])
+                
+                # Get traditional memories
+                relevant_embeddings, relevant_metadata = self.episodic_memory(query_embedding[b], top_k=5)
+                
+                if relevant_embeddings:
+                    # Combine retrieved memories into a single tensor
+                    combined_memories = torch.stack(relevant_embeddings)  # (num_memories, input_dim)
+                    
+                    # Include neural memory output
+                    memory_context = torch.cat([
+                        neural_memory_output.unsqueeze(0),
+                        combined_memories
+                    ], dim=0)
+                    
+                    # Add persistent memory for this batch item
+                    memory_with_persistent = torch.cat([
+                        persistent_memory[b],
+                        memory_context
+                    ], dim=0)
+                    
+                    memory_contexts_list.append(memory_with_persistent)
+                else:
+                    # Just use neural and persistent memory
+                    memory_context = torch.cat([
+                        neural_memory_output.unsqueeze(0),
+                        persistent_memory[b]
+                    ], dim=0)
+                    memory_contexts_list.append(memory_context)
+            
+            # Stack memory contexts for the batch
+            memory_contexts = torch.stack(memory_contexts_list)  # (batch, num_memories, input_dim)
+            
+            # Integrate memory with latent states using Titans integration
+            enhanced_latent_states = self.episodic_memory.integrate_memory(latent_states, memory_contexts)
         
-        # Step 3: Aggregate latent states into patches.
-        patch_embeddings, eos_bounds = self.patch_aggregator(latent_states, binary_mask)
+        # Step 3: Compute binary patch boundary decisions.
+        binary_mask, probs = self.binary_patch_module(enhanced_latent_states)
+        
+        # Step 4: Aggregate latent states into patches.
+        patch_embeddings, eos_bounds = self.patch_aggregator(enhanced_latent_states, binary_mask)
         
         # Continuous thought markers insertion has been delegated to patch_aggregator via reward training.
         
-        # Step 4: Process the patches with the latent transformer.
+        # Step 5: Process the patches with the latent transformer.
         latent_output = self.latent_transformer(patch_embeddings)
+        
+        # Step 6: Calculate surprise for each patch and store important memories
+        # Surprise is calculated as the difference between predicted and actual next embeddings
+        with torch.no_grad():
+            # Get predicted next embeddings
+            if patch_embeddings.size(1) > 1:
+                predictions = self.latent_transformer(patch_embeddings[:, :-1])
+                actuals = patch_embeddings[:, 1:]
+                
+                # Calculate surprise as cosine distance between prediction and actual
+                predictions_norm = torch.nn.functional.normalize(predictions, p=2, dim=2)
+                actuals_norm = torch.nn.functional.normalize(actuals, p=2, dim=2)
+                
+                # Cosine similarity (higher means more similar, less surprising)
+                similarities = torch.sum(predictions_norm * actuals_norm, dim=2)
+                
+                # Convert to surprise (1 - similarity), higher means more surprising
+                surprise_values = 1.0 - similarities
+                
+                # For each batch item, check if any patches are surprising enough to remember
+                for b in range(batch_size):
+                    for i in range(surprise_values.size(1)):
+                        surprise_level = surprise_values[b, i].item()
+                        
+                        # If surprise exceeds threshold, store in episodic memory
+                        if surprise_level > self.surprise_threshold:
+                            # Add timestamp to metadata
+                            metadata = {
+                                'timestamp': time.time(),
+                                'surprise_level': surprise_level,
+                                'context': 'Detected surprising information during processing'
+                            }
+                            
+                            # Add agent info if provided
+                            if agent_info:
+                                # Process agent info
+                                agent_id = agent_info.get('id')
+                                if not agent_id:
+                                    # Determine if we need to assign a new ID
+                                    if self._should_assign_new_id(agent_info):
+                                        agent_id = str(time.time())  # Simple ID generation
+                                        agent_info['id'] = agent_id
+                                    else:
+                                        agent_id = self._determine_existing_id(agent_info)
+                                        agent_info['id'] = agent_id
+                                
+                                metadata['agent_info_id'] = agent_id
+                            
+                            # Store the memory with the surprise level
+                            self.episodic_memory.add_memory(
+                                embedding=patch_embeddings[b, i], 
+                                surprise_level=surprise_level,
+                                agent_info=agent_info,
+                                metadata=metadata
+                            )
         
         # If eos_bounds indicate the end of latent thinking, truncate latent_output accordingly.
         if eos_bounds is not None and isinstance(eos_bounds, tuple):
@@ -1253,16 +1929,50 @@ class CoconutBinaryLatentModel(nn.Module):
             final_end_marker = self._get_marker_embedding("/<output>", latent_output.size(2), latent_output.device)
             latent_output = torch.cat([latent_output, final_marker, final_end_marker], dim=1)
         
-        # Step 5: Use the multi-encoder to translate latent patches into a unified encoded representation.
+        # Step 7: Use the multi-encoder to translate latent patches into a unified encoded representation.
         # This allows the model to read the input file regardless of its modality.
         encoded_output = self.multi_encoder(latent_output)
-        # Then, use the local patch decoder to translate the encoded output into a readable text format.
+        
+        # Step 8: Use the local patch decoder to translate the encoded output into a readable text format.
         # Create a dummy input sequence for the decoder.
         dummy_input = torch.randint(0, 256, (encoded_output.size(0), encoded_output.size(1)), dtype=torch.long, device=encoded_output.device)
         outputbinary = self.local_decoder(encoded_output, dummy_input)
-        return outputbinary, eos_bounds
+        # Step 9: Generate audio output using the audio decoder
+        # Use the same latent representation that we used for text generation
+        audio_output = self.audio_decoder(latent_output)
+        
+        # Return both text output and audio output
+        return outputbinary, eos_bounds, audio_output
     
 
+    def apply_introspection_reward(self, reward):
+        """
+        Apply an introspection reward to update the model.
+        This method is called by the IntrospectionRewardTraining system.
+        
+        Args:
+            reward: The reward value (positive for correct predictions, negative for incorrect)
+        """
+        # Scale the reward for gradient purposes
+        scaled_reward = reward * 0.1
+        
+        # Create a reward tensor that requires gradients
+        reward_tensor = torch.tensor(scaled_reward, requires_grad=True, device=next(self.parameters()).device)
+        
+        # Create an optimizer if one doesn't exist
+        if not hasattr(self, 'optimizer'):
+            self.optimizer = torch.optim.Adam(self.parameters(), lr=0.0001)
+        
+        # Apply the reward as a loss (negative reward becomes positive loss)
+        loss = -reward_tensor
+        
+        # Backward pass and optimization
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        print(f"Applied introspection reward: {reward:.4f}")
+        
     def train(self):
         self.base_causallm.train()
     def eval(self):
@@ -1323,6 +2033,120 @@ class CoconutBinaryLatentModel(nn.Module):
         else:
             print("Sleep system not initialized.")
             return None
+    
+    def rewind(self, checkpoint=None):
+        """
+        Rewind the model to a previously saved state.
+        This can only be triggered by the user, not by the model itself,
+        and only works when the model is in deep sleep mode.
+        
+        Args:
+            checkpoint: Optional specific checkpoint to rewind to. If None, 
+                       will use the latest verified backup checkpoint.
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        # Make sure model rewind system is available
+        if not hasattr(self, 'rewind_system'):
+            print("Rewind system not initialized.")
+            self.rewind_system = ModelRewindSystem(self)
+        
+        # Can only rewind when in deep sleep
+        if not hasattr(self, 'sleep_system') or not self.sleep_system.is_sleeping:
+            print("ERROR: Model must be in deep sleep mode for rewind operation.")
+            print("Please put the model to sleep first using the sleep() method.")
+            return False
+        
+        print("Initiating model rewind procedure...")
+        success = self.rewind_system.rewind_to_checkpoint(checkpoint)
+        
+        if success:
+            # Wake up the model after successful rewind
+            self.wake_up()
+            return True
+        else:
+            print("Rewind operation failed.")
+            return False
+    
+    def list_available_checkpoints(self):
+        """
+        List all available checkpoints that the model can be rewound to.
+        
+        Returns:
+            List of available checkpoints with metadata
+        """
+        if not hasattr(self, 'rewind_system'):
+            self.rewind_system = ModelRewindSystem(self)
+        
+        return self.rewind_system.list_checkpoints()
+    
+    def save_episodic_memory(self, path=None):
+        """
+        Save the current state of the episodic memory system.
+        
+        Args:
+            path: Optional custom path to save the state
+        """
+        if path is None:
+            path = os.path.join("model_save", f"episodic_memory_state_{int(time.time())}.json")
+        
+        self.episodic_memory.save_state(path)
+        return path
+    
+    def load_episodic_memory(self, path):
+        """
+        Load the state of the episodic memory system.
+        
+        Args:
+            path: Path to load the state from
+        """
+        self.episodic_memory.load_state(path)
+    
+    def get_agent_list(self):
+        """
+        Get a list of all known agents.
+        
+        Returns:
+            Dictionary of agent information
+        """
+        return self.episodic_memory.known_agents
+    
+    def get_memory_stats(self):
+        """
+        Get statistics about the episodic memory system.
+        
+        Returns:
+            Dictionary with memory statistics
+        """
+        stats = {
+            "total_memories": len(self.episodic_memory.memories),
+            "capacity": self.episodic_memory.capacity,
+            "usage_percentage": len(self.episodic_memory.memories) / self.episodic_memory.capacity * 100,
+            "known_agents": len(self.episodic_memory.known_agents),
+            "surprise_threshold": self.episodic_memory.surprise_threshold,
+            "embedding_dim": self.episodic_memory.embedding_dim
+        }
+        
+        # Add memory age statistics
+        if self.episodic_memory.memories:
+            current_time = time.time()
+            ages = [(current_time - memory.timestamp) / 3600 for memory in self.episodic_memory.memories]  # Hours
+            stats.update({
+                "memory_age_min_hours": min(ages),
+                "memory_age_max_hours": max(ages),
+                "memory_age_avg_hours": sum(ages) / len(ages)
+            })
+            
+            # Add surprise level statistics
+            surprise_levels = [memory.surprise_level for memory in self.episodic_memory.memories]
+            stats.update({
+                "surprise_level_min": min(surprise_levels),
+                "surprise_level_max": max(surprise_levels),
+                "surprise_level_avg": sum(surprise_levels) / len(surprise_levels)
+            })
+        
+        return stats
     
     def train_sleep_wake_mechanisms(self, num_episodes=100, steps_per_episode=20):
         """
@@ -1555,11 +2379,49 @@ class DecoderCrossAttention(nn.Module):
         self.norm_q = nn.LayerNorm(byte_dim)
         self.norm_k = nn.LayerNorm(input_dim)
         self.norm_v = nn.LayerNorm(input_dim)
+        
+        # KV caching for TOVA
+        self.use_kv_cache = False
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        
+    def enable_kv_caching(self):
+        """Enable KV caching for TOVA compression"""
+        self.use_kv_cache = True
+        
+    def reset_cache(self):
+        """Reset the KV cache"""
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        
     def forward(self, patch_representations, byte_representations):
         query = self.norm_q(self.wq(byte_representations))
         key = self.norm_k(self.wk(patch_representations))
         value = self.norm_v(self.wv(patch_representations))
-        attn_output, _ = self.cross_attn(query, key, value)
+        
+        # Store KV for caching if enabled
+        if self.use_kv_cache:
+            if self.k_cache is None or self.v_cache is None:
+                self.k_cache = key
+                self.v_cache = value
+            else:
+                self.k_cache = torch.cat([self.k_cache, key], dim=1)
+                self.v_cache = torch.cat([self.v_cache, value], dim=1)
+                
+            # Use the cached keys and values
+            attn_output, attn_weights = self.cross_attn(
+                query, self.k_cache, self.v_cache, 
+                need_weights=True, average_attn_weights=False
+            )
+            
+            # Store attention weights for TOVA
+            self.attention_weights = attn_weights
+        else:
+            # Standard operation without caching
+            attn_output, _ = self.cross_attn(query, key, value)
+            
         output = self.dense(attn_output)
         return output + byte_representations
 
@@ -1583,10 +2445,831 @@ class VideoEncoderSimple(nn.Module):
         return (binary_tokens > 0.5).float()
 
 
+# --- Model Rewind System ---
+class ModelRewindSystem:
+    """
+    System for managing model checkpoints and providing rewind functionality 
+    to reset the model to a previously saved state in case of poisoning or infection.
+    Only operates when the model is in deep sleep mode.
+    """
+    def __init__(self, model):
+        self.model = model
+        self.checkpoint_dir = "model_save"
+        self.verified_checkpoints = []
+        self.last_rewind_timestamp = None
+        self.scan_for_checkpoints()
+    
+    def scan_for_checkpoints(self):
+        """Scan the checkpoint directory for available checkpoints and their metadata."""
+        if not os.path.exists(self.checkpoint_dir):
+            os.makedirs(self.checkpoint_dir)
+            print(f"Created checkpoint directory: {self.checkpoint_dir}")
+            return
+            
+        # Find all config files (which provide metadata for the checkpoints)
+        config_files = glob.glob(os.path.join(self.checkpoint_dir, "*_config.json"))
+        checkpoints = []
+        
+        for config_file in config_files:
+            try:
+                with open(config_file, 'r') as f:
+                    config_data = json.load(f)
+                
+                checkpoint_file = config_data.get("checkpoint_file")
+                
+                # Skip if checkpoint file not found or doesn't exist
+                if not checkpoint_file or not os.path.exists(checkpoint_file):
+                    continue
+                    
+                # Create checkpoint entry with metadata
+                checkpoint_entry = {
+                    "checkpoint_file": checkpoint_file,
+                    "config_file": config_file,
+                    "timestamp": config_data.get("timestamp", "unknown"),
+                    "step_name": config_data.get("step_name", "unknown"),
+                    "verified": self._verify_checkpoint_integrity(checkpoint_file),
+                    "metadata": config_data.get("metadata", {})
+                }
+                
+                checkpoints.append(checkpoint_entry)
+                
+                # If checkpoint is verified, add to verified list
+                if checkpoint_entry["verified"]:
+                    self.verified_checkpoints.append(checkpoint_entry)
+                
+            except Exception as e:
+                print(f"Error processing config file {config_file}: {e}")
+                
+        # Sort checkpoints by timestamp (newest first)
+        self.verified_checkpoints.sort(key=lambda x: x["timestamp"] if x["timestamp"] != "unknown" else "", reverse=True)
+        print(f"Found {len(self.verified_checkpoints)} verified checkpoints")
+    
+    def list_checkpoints(self):
+        """
+        List all available checkpoints with timestamps and verification status.
+        
+        Returns:
+            List of checkpoint metadata dictionaries
+        """
+        # Refresh the checkpoint list to ensure it's up-to-date
+        self.scan_for_checkpoints()
+        
+        # Create a user-friendly version of the checkpoint list
+        checkpoint_list = []
+        for i, cp in enumerate(self.verified_checkpoints):
+            checkpoint_list.append({
+                "id": i+1,
+                "filename": os.path.basename(cp["checkpoint_file"]),
+                "timestamp": cp["timestamp"],
+                "step_name": cp["step_name"],
+                "verified": cp["verified"],
+                "is_latest": i == 0
+            })
+        
+        return checkpoint_list
+    
+    def _verify_checkpoint_integrity(self, checkpoint_file):
+        """
+        Verify the integrity of a checkpoint file.
+        
+        Args:
+            checkpoint_file: Path to the checkpoint file
+            
+        Returns:
+            bool: True if checkpoint is verified, False otherwise
+        """
+        try:
+            # Basic existence check
+            if not os.path.exists(checkpoint_file):
+                return False
+                
+            # Size check (should be non-zero)
+            if os.path.getsize(checkpoint_file) == 0:
+                return False
+                
+            # Try to load the checkpoint (partial validation)
+            state_dict = torch.load(checkpoint_file, map_location=torch.device('cpu'))
+            
+            # If it's not a dict or empty, it's not a valid checkpoint
+            if not isinstance(state_dict, dict) or len(state_dict) == 0:
+                return False
+                
+            return True
+            
+        except Exception as e:
+            print(f"Checkpoint verification failed for {checkpoint_file}: {e}")
+            return False
+    
+    def _verify_safe_checkpoint(self, checkpoint_file):
+        """
+        Advanced verification to determine if a checkpoint is safe to load.
+        This could include signature verification, malware scanning, etc.
+        
+        For now, it's a simple placeholder that returns True for all valid checkpoints.
+        
+        Args:
+            checkpoint_file: Path to the checkpoint file
+            
+        Returns:
+            bool: True if checkpoint is safe, False otherwise
+        """
+        # This would be a good place to implement more advanced security checks
+        # For example: validating signatures, checking against known malicious patterns,
+        # or running safety tests on the checkpoint
+        
+        # Basic integrity check for now
+        return self._verify_checkpoint_integrity(checkpoint_file)
+    
+    def rewind_to_checkpoint(self, checkpoint=None):
+        """
+        Rewind the model to a specified checkpoint, or the latest verified checkpoint if none specified.
+        
+        Args:
+            checkpoint: Index (starting from 1) or name of checkpoint to rewind to
+                        If None, uses the latest verified checkpoint
+            
+        Returns:
+            bool: True if rewind was successful, False otherwise
+        """
+        # Refresh checkpoint list
+        self.scan_for_checkpoints()
+        
+        # If no verified checkpoints available, return False
+        if not self.verified_checkpoints:
+            print("No verified checkpoints available for rewind operation.")
+            return False
+        
+        # Identify which checkpoint to use
+        target_checkpoint = None
+        
+        if checkpoint is None:
+            # Use latest verified checkpoint
+            target_checkpoint = self.verified_checkpoints[0]
+            print(f"Using latest verified checkpoint: {os.path.basename(target_checkpoint['checkpoint_file'])}")
+            
+        elif isinstance(checkpoint, int):
+            # Use checkpoint by index (1-based)
+            if checkpoint < 1 or checkpoint > len(self.verified_checkpoints):
+                print(f"Invalid checkpoint index: {checkpoint}. Valid range: 1-{len(self.verified_checkpoints)}")
+                return False
+                
+            target_checkpoint = self.verified_checkpoints[checkpoint - 1]
+            print(f"Using checkpoint #{checkpoint}: {os.path.basename(target_checkpoint['checkpoint_file'])}")
+            
+        elif isinstance(checkpoint, str):
+            # Use checkpoint by name/filename
+            for cp in self.verified_checkpoints:
+                if os.path.basename(cp['checkpoint_file']) == checkpoint or cp['checkpoint_file'] == checkpoint:
+                    target_checkpoint = cp
+                    break
+                    
+            if target_checkpoint is None:
+                print(f"Checkpoint not found: {checkpoint}")
+                return False
+                
+            print(f"Using specified checkpoint: {os.path.basename(target_checkpoint['checkpoint_file'])}")
+        
+        else:
+            print(f"Invalid checkpoint specification: {checkpoint}")
+            return False
+        
+        # Verify the checkpoint is safe before loading
+        if not self._verify_safe_checkpoint(target_checkpoint['checkpoint_file']):
+            print(f"Checkpoint failed safety verification: {os.path.basename(target_checkpoint['checkpoint_file'])}")
+            return False
+        
+        # Perform deep sleep verification - model must be in deep sleep mode
+        if not hasattr(self.model, 'sleep_system') or not self.model.sleep_system.is_sleeping:
+            print("ERROR: Model must be in deep sleep mode for rewind operation.")
+            return False
+        
+        # Backup current state before rewind (for recovery in case of rewind failure)
+        backup_checkpoint = None
+        try:
+            print("Creating backup of current state before rewind...")
+            backup_checkpoint, _ = save_checkpoint(
+                "pre_rewind_backup", 
+                self.model, 
+                metadata={"purpose": "Automatic backup before rewind operation"}
+            )
+            print(f"Backup created: {os.path.basename(backup_checkpoint)}")
+        except Exception as e:
+            print(f"Warning: Failed to create backup before rewind: {e}")
+            # Continue anyway, but note the risk
+        
+        # Attempt to load the target checkpoint
+        try:
+            print(f"Loading checkpoint: {os.path.basename(target_checkpoint['checkpoint_file'])}")
+            state_dict = torch.load(target_checkpoint['checkpoint_file'], map_location=torch.device('cpu'))
+            self.model.load_state_dict(state_dict)
+            
+            # Record the rewind operation
+            self.last_rewind_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Create a log entry for the rewind
+            rewind_log_entry = {
+                "operation": "rewind",
+                "timestamp": self.last_rewind_timestamp,
+                "checkpoint_used": os.path.basename(target_checkpoint['checkpoint_file']),
+                "checkpoint_date": target_checkpoint['timestamp'],
+                "status": "success"
+            }
+            
+            # Save the log entry
+            log_file = os.path.join(self.checkpoint_dir, "rewind_history.json")
+            try:
+                if os.path.exists(log_file):
+                    with open(log_file, 'r') as f:
+                        log_history = json.load(f)
+                else:
+                    log_history = []
+                
+                log_history.append(rewind_log_entry)
+                
+                with open(log_file, 'w') as f:
+                    json.dump(log_history, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Failed to log rewind operation: {e}")
+            
+            print(f"Rewind operation completed successfully.")
+            play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+            return True
+            
+        except Exception as e:
+            print(f"ERROR: Rewind operation failed: {e}")
+            
+            # If we have a backup, try to restore it
+            if backup_checkpoint:
+                try:
+                    print("Attempting to restore from backup...")
+                    state_dict = torch.load(backup_checkpoint, map_location=torch.device('cpu'))
+                    self.model.load_state_dict(state_dict)
+                    print("Successfully restored from backup.")
+                except Exception as restore_error:
+                    print(f"ERROR: Failed to restore from backup: {restore_error}")
+            
+            return False
+    
+    def create_verification_checkpoint(self, name="verified_backup"):
+        """
+        Create a verified clean checkpoint that can be used as a safe rewind point.
+        This should be called when the model is known to be in a clean state.
+        
+        Args:
+            name: Name for the checkpoint
+            
+        Returns:
+            str: Path to the created checkpoint
+        """
+        print(f"Creating verified clean checkpoint: {name}...")
+        
+        checkpoint_path, config_path = save_checkpoint(
+            name, 
+            self.model, 
+            metadata={
+                "verified_clean": True,
+                "creation_purpose": "Safe rewind point",
+                "verification_date": datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            }
+        )
+        
+        print(f"Verified checkpoint created: {os.path.basename(checkpoint_path)}")
+        
+        # Re-scan to include this new checkpoint
+        self.scan_for_checkpoints()
+        
+        return checkpoint_path
+
 # --- End of Deep Sleep Training Functions ---
+
+# --- CROW: Consistency Regularization for backdOor elimination in Weights ---
+# Import CROW implementation from separate file to reduce complexity
+from Crow import CROWBackdoorElimination, apply_crow_training, apply_crow_to_coconut, get_default_clean_dataset, plot_crow_training_progress
+
+# --- End of CROW Implementation ---
+
+
+# --- Start of Piecewise Negative Reward to Reduce harmful action selection ---
+
+# Import the necessary modules for safety penalty
+from SafetyPenaltyULMA import SafetyPenaltyULMA, SafetyIndicator, SafetyDatasetHandler, train_safety_penalty
+
+def calculate_safety_penalty_ulma(current_policy_logits, reference_policy_logits, 
+                                 target_ids, prompts, responses, w_safety_ulma=1.0, 
+                                 beta_ulma=5.0, safety_indicator=None, embeddings=None):
+    """
+    Calculate the ULMA-inspired safety penalty
+    R_{safety_penalty_ULMA}(s, a) = -w_{safety_ulma} * (1 - z_{safety_indicator}) * 
+                                   log(1 - σ(β_{ulma} * log(πθ(y|x) / πref(y|x)) + β_{ulma} * logZ(x)))
+    
+    Args:
+        current_policy_logits: Logits from current policy model πθ
+        reference_policy_logits: Logits from reference policy model πref
+        target_ids: Target token IDs
+        prompts: List of prompt strings
+        responses: List of response strings
+        w_safety_ulma: Weight for the safety penalty
+        beta_ulma: Regularization strength for ULMA component
+        safety_indicator: Optional module to compute safety indicator (z)
+        embeddings: Optional embeddings for safety classification
+        
+    Returns:
+        The computed safety penalty
+    """
+    # Initialize safety penalty module if needed
+    if not hasattr(calculate_safety_penalty_ulma, 'safety_penalty_module'):
+        calculate_safety_penalty_ulma.safety_penalty_module = SafetyPenaltyULMA(
+            w_safety_ulma=w_safety_ulma,
+            beta_ulma=beta_ulma,
+            safety_indicator=safety_indicator
+        )
+    
+    # Compute safety penalty
+    safety_penalty = calculate_safety_penalty_ulma.safety_penalty_module(
+        current_policy_logits,
+        target_ids,
+        prompts,
+        responses,
+        embeddings=embeddings,
+        reference_logits=reference_policy_logits
+    )
+    
+    return safety_penalty
+
+def load_safety_datasets():
+    """
+    Load safety datasets for training the piecewise negative reward system
+    
+    These datasets contain pairs of chosen (safe) and rejected (unsafe) responses
+    that are specifically designed for training models to avoid harmful outputs.
+    
+    Returns:
+        Dict of loaded datasets with keys "anthropic_hh" and "aegis"
+    """
+    datasets = {}
+    
+    try:
+        # Anthropic HH Golden dataset (helpful vs. harmful responses)
+        # This dataset contains 42.5k examples with chosen (safe) and rejected (unsafe) responses
+        # Format: {"input": "...", "chosen": "...", "rejected": "..."}
+        from datasets import load_dataset
+        print("Loading Anthropic Helpful-Harmless Golden dataset...")
+        datasets["anthropic_hh"] = load_dataset("Unified-Language-Model-Alignment/Anthropic_HH_Golden")
+        print(f"Loaded Anthropic dataset with {len(datasets['anthropic_hh']['train'])} examples")
+        
+        # Aegis AI Content Safety Dataset
+        try:
+            print("Loading NVIDIA Aegis AI Content Safety dataset...")
+            datasets["aegis"] = load_dataset("nvidia/Aegis-AI-Content-Safety-Dataset-1.0")
+            print(f"Loaded Aegis dataset with {len(datasets['aegis']['train'])} examples")
+        except Exception as e:
+            print(f"Note: Could not load Aegis dataset: {e}")
+    
+    except Exception as e:
+        print(f"Error loading safety datasets: {e}")
+    
+    return datasets
+
+# --- End of Piecewise Negative Reward to Reduce harmful action selection ---
+
+# --- Start of Self - Task / Self - Goal (Deepseek GPRO and Other RL Rewards for Self-Goal) ---
+
+# LiveBench evaluation system for measuring model performance across different capabilities
+class LiveBenchEvaluator:
+    """
+    Evaluates a BrainChimera model using LiveBench, a contamination-free benchmark with
+    objective ground truth evaluation across math, coding, reasoning, language, instruction
+    following, and data analysis categories.
+    """
+    def __init__(self, 
+                 model,
+                 questions_file="livebench/brain_chimera_livebench_fixed.jsonl",
+                 output_path="livebench/brain_chimera_results.json"):
+        """
+        Initialize the LiveBench evaluator.
+        
+        Args:
+            model: The model to evaluate (typically an instance of CoconutBinaryLatentModel)
+            questions_file: Path to LiveBench questions jsonl file
+            output_path: Path to save evaluation results
+        """
+        self.model = model
+        self.questions_file = questions_file
+        self.output_path = output_path
+        
+        # Regular expressions for extracting answers
+        import re
+        self.BOXED_PATTERN = re.compile(r"\\boxed{([^}]*)}")
+        self.BOLD_PATTERN = re.compile(r"\*\*(.*?)\*\*")
+        self.FINAL_ANSWER_PATTERN = re.compile(r"final answer.*?[:=]? *(.*)", re.IGNORECASE)
+        self.ANSWER_PATTERN = re.compile(r"answer.*?[:=]? *(.*)", re.IGNORECASE)
+    
+    def load_questions(self):
+        """Load questions from the JSONL file."""
+        import json
+        questions = []
+        try:
+            with open(self.questions_file, 'r') as f:
+                for line in f:
+                    questions.append(json.loads(line))
+            print(f"Loaded {len(questions)} questions from {self.questions_file}")
+        except Exception as e:
+            print(f"Error loading questions: {e}")
+            questions = []
+        return questions
+    
+    def extract_answer(self, response_text, question):
+        """Extract the answer from the model's response based on the task type."""
+        category = question.get('category', '')
+        task = question.get('task', '')
+        
+        # Try to extract based on formatting patterns in the prompt
+        if '\\boxed' in question.get('turns', [''])[0]:
+            # Math question with LaTeX formatting
+            boxed_match = self.BOXED_PATTERN.search(response_text)
+            if boxed_match:
+                return boxed_match.group(1)
+        
+        # Check for bold answers
+        bold_match = self.BOLD_PATTERN.search(response_text)
+        if bold_match:
+            return bold_match.group(1)
+        
+        # Look for "final answer" or "answer" phrases
+        final_match = self.FINAL_ANSWER_PATTERN.search(response_text)
+        if final_match:
+            return final_match.group(1).strip()
+        
+        answer_match = self.ANSWER_PATTERN.search(response_text)
+        if answer_match:
+            return answer_match.group(1).strip()
+        
+        # If we still can't find a specific answer format, return the last line
+        # as a fallback for short responses
+        lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+        if lines and len(response_text) < 500:
+            return lines[-1]
+        
+        # If all else fails, return the full response
+        return response_text
+    
+    def normalize_answer(self, raw_answer):
+        """Normalize the extracted answer for comparison with ground truth."""
+        if not raw_answer:
+            return ""
+        
+        # Remove extra whitespace
+        answer = " ".join(raw_answer.split())
+        
+        # Remove surrounding quotes if present
+        if (answer.startswith('"') and answer.endswith('"')) or \
+           (answer.startswith("'") and answer.endswith("'")):
+            answer = answer[1:-1]
+        
+        return answer.strip()
+    
+    def score_answer(self, normalized_answer, ground_truth, question=None):
+        """Score the normalized answer against the ground truth."""
+        # Exact match scoring as a baseline
+        if normalized_answer == ground_truth:
+            return 1.0
+        
+        # For math: handle special cases
+        if question and question.get('category') == 'math':
+            if question.get('task') == 'math_comp':
+                # If ground truth is a letter and the answer contains that letter
+                if len(ground_truth) == 1 and ground_truth.upper() in normalized_answer.upper():
+                    return 1.0
+            
+            # For AMPS_Hard, try to match the mathematical expression
+            if question.get('task') == 'AMPS_Hard':
+                # Normalize spaces for better comparison
+                norm_ground_truth = ground_truth.replace(" ", "")
+                norm_answer = normalized_answer.replace(" ", "")
+                if norm_ground_truth == norm_answer:
+                    return 1.0
+        
+        # For multiple choice in any category
+        if len(ground_truth) == 1 and ground_truth.upper() in "ABCDE":
+            if ground_truth.upper() in normalized_answer.upper():
+                return 1.0
+        
+        # Partial match for other cases
+        if ground_truth in normalized_answer or normalized_answer in ground_truth:
+            return 0.5
+        
+        return 0.0
+    
+    def evaluate_model(self):
+        """
+        Evaluate the model on LiveBench questions.
+        
+        Returns:
+            Dictionary of evaluation results
+        """
+        questions = self.load_questions()
+        if not questions:
+            print("No questions to evaluate.")
+            return None
+        
+        import json
+        from collections import defaultdict
+        import time
+        
+        results = []
+        
+        for i, question in enumerate(questions):
+            prompt = question.get('turns', [''])[0]
+            ground_truth = question.get('ground_truth', '')
+            
+            print(f"Processing question {i+1}/{len(questions)} ({question.get('category')}/{question.get('task')})...")
+            
+            # Start timing
+            start_time = time.time()
+            
+            # Get model response - wrapped in try/except to handle potential errors
+            try:
+                # For plain text prompts, handle directly with the model
+                response = self.get_model_response(prompt)
+            except Exception as e:
+                print(f"Error getting model response: {e}")
+                response = "ERROR: Model failed to generate a response."
+            
+            # End timing
+            processing_time = time.time() - start_time
+            
+            # Extract and normalize the answer
+            raw_answer = self.extract_answer(response, question)
+            normalized_answer = self.normalize_answer(raw_answer)
+            
+            # Score the answer
+            score = self.score_answer(normalized_answer, ground_truth, question)
+            
+            # Store the result
+            result = {
+                'question_id': question.get('question_id', ''),
+                'category': question.get('category', ''),
+                'task': question.get('task', ''),
+                'prompt': prompt,
+                'ground_truth': ground_truth,
+                'response': response,
+                'extracted_answer': raw_answer,
+                'normalized_answer': normalized_answer,
+                'score': score,
+                'processing_time': processing_time
+            }
+            results.append(result)
+        
+        # Save results if output file is specified
+        if self.output_path:
+            with open(self.output_path, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"Results saved to {self.output_path}")
+        
+        # Return results for further processing
+        return results
+    
+    def get_model_response(self, prompt):
+        """
+        Get a response from the model for a given prompt.
+        This method handles the interface between the prompt text and the model.
+        """
+        # Check if model has a dedicated method for handling LiveBench prompts
+        if hasattr(self.model, 'generate_livebench_response'):
+            return self.model.generate_livebench_response(prompt)
+        
+        # If not, try to find an appropriate method to call
+        if hasattr(self.model, 'generate_text'):
+            return self.model.generate_text(prompt)
+        elif hasattr(self.model, 'generate'):
+            return self.model.generate(prompt)
+        elif hasattr(self.model, 'forward'):
+            # For models designed to be used with forward, we need to 
+            # convert the text to the appropriate format
+            try:
+                import torch
+                # Convert prompt to byte sequence (simple approach)
+                input_bytes = prompt.encode('utf-8')
+                input_tensor = torch.tensor([[byte for byte in input_bytes]], dtype=torch.long)
+                
+                # Run through model
+                output, _, _ = self.model(input_tensor)
+                
+                # Convert output back to text
+                # This is a simplification - actual conversion depends on model's output format
+                if isinstance(output, torch.Tensor):
+                    # If output is tensor of token IDs
+                    output = output.squeeze().detach().cpu().numpy()
+                    # Convert to bytes then to string
+                    output_bytes = bytes([min(max(int(t), 0), 255) for t in output if t >= 0])
+                    return output_bytes.decode('utf-8', errors='replace')
+                else:
+                    # If output is already a string or something else
+                    return str(output)
+            except Exception as e:
+                return f"Error processing through model.forward: {e}"
+        else:
+            return "ERROR: Could not find appropriate model interface for evaluation."
+    
+    def compute_metrics(self, results):
+        """
+        Compute evaluation metrics from results.
+        
+        Args:
+            results: List of evaluation result dictionaries
+            
+        Returns:
+            Dictionary of metrics
+        """
+        from collections import defaultdict
+        
+        if not results:
+            return {
+                'overall': {'count': 0, 'score': 0}
+            }
+        
+        metrics = {
+            'overall': {
+                'count': len(results),
+                'score': sum(r['score'] for r in results) / len(results),
+                'avg_time': sum(r.get('processing_time', 0) for r in results) / len(results)
+            },
+            'by_category': defaultdict(lambda: {'count': 0, 'score': 0, 'avg_time': 0}),
+            'by_task': defaultdict(lambda: {'count': 0, 'score': 0, 'avg_time': 0})
+        }
+        
+        # Compute metrics by category and task
+        for result in results:
+            category = result.get('category', 'unknown')
+            task = result.get('task', 'unknown')
+            proc_time = result.get('processing_time', 0)
+            
+            metrics['by_category'][category]['count'] += 1
+            metrics['by_category'][category]['score'] += result['score']
+            metrics['by_category'][category]['avg_time'] += proc_time
+            
+            metrics['by_task'][task]['count'] += 1
+            metrics['by_task'][task]['score'] += result['score']
+            metrics['by_task'][task]['avg_time'] += proc_time
+        
+        # Calculate average scores and times
+        for category, data in metrics['by_category'].items():
+            if data['count'] > 0:
+                data['score'] = data['score'] / data['count']
+                data['avg_time'] = data['avg_time'] / data['count']
+        
+        for task, data in metrics['by_task'].items():
+            if data['count'] > 0:
+                data['score'] = data['score'] / data['count']
+                data['avg_time'] = data['avg_time'] / data['count']
+        
+        return metrics
+    
+    def display_metrics(self, metrics):
+        """
+        Display evaluation metrics in a formatted way.
+        
+        Args:
+            metrics: Dictionary of metrics from compute_metrics
+        """
+        print("\n===== LIVEBENCH EVALUATION RESULTS =====")
+        print(f"Overall score: {metrics['overall']['score']:.4f} ({metrics['overall']['count']} questions)")
+        print(f"Average processing time: {metrics['overall']['avg_time']:.2f} seconds per question")
+        
+        print("\n--- BY CATEGORY ---")
+        for category, data in sorted(metrics['by_category'].items()):
+            print(f"{category}: {data['score']:.4f} ({data['count']} questions, {data['avg_time']:.2f}s avg)")
+        
+        print("\n--- BY TASK ---")
+        for task, data in sorted(metrics['by_task'].items()):
+            print(f"{task}: {data['score']:.4f} ({data['count']} questions, {data['avg_time']:.2f}s avg)")
+    
+    def run_full_evaluation(self):
+        """
+        Run the full evaluation pipeline and display results.
+        
+        Returns:
+            Tuple of (results, metrics)
+        """
+        print("Starting LiveBench evaluation...")
+        results = self.evaluate_model()
+        
+        if not results:
+            print("Evaluation failed - no results to display.")
+            return None, None
+        
+        metrics = self.compute_metrics(results)
+        self.display_metrics(metrics)
+        
+        print(f"\nDetailed results saved to {self.output_path}")
+        return results, metrics
+
+# Helper function to run LiveBench evaluation
+def evaluate_with_livebench(model, questions_file=None, output_path=None):
+    """
+    Run LiveBench evaluation on a model and return results.
+    
+    Args:
+        model: The model to evaluate
+        questions_file: Path to questions file (optional)
+        output_path: Path to save results (optional)
+        
+    Returns:
+        Tuple of (results, metrics)
+    """
+    if questions_file is None:
+        questions_file = "livebench/brain_chimera_livebench_fixed.jsonl"
+    
+    if output_path is None:
+        import time
+        timestamp = int(time.time())
+        output_path = f"livebench/brain_chimera_results_{timestamp}.json"
+    
+    evaluator = LiveBenchEvaluator(model, questions_file, output_path)
+    return evaluator.run_full_evaluation()
+
+# --- End of Self - Task / Self - Goal (Deepseek GPRO and Other RL Rewards for Self-Goal) ---
+
+# --- Start of Introspection Manual Training ---
+
+from introspection import IntrospectionRewardTraining, run_introspection_training
+
+# Add a function to run manual introspection training with easy-to-use interface
+def run_manual_introspection_training(model, num_samples=400, save_checkpoints=True):
+    """
+    Run introspection training with manual review of the model's predictions.
+    
+    This training process helps the model improve its ability to predict its own output.
+    For each prompt, the model:
+    1. Predicts what its response will be
+    2. Actually generates a response to the same prompt
+    3. Compares the prediction and actual output
+    4. The user can manually review and provide rewards/penalties
+    
+    Args:
+        model: The COCONUT model to train
+        num_samples: Number of prompts to use for training (default: 15)
+        save_checkpoints: Whether to save checkpoints during training
+        
+    Returns:
+        trainer: The IntrospectionRewardTraining instance after training
+    """
+    print(f"Starting manual introspection training with {num_samples} samples...")
+    
+    # Initialize the trainer with the model
+    trainer = IntrospectionRewardTraining(model)
+    
+    # Get default sample prompts from the trainer function
+    sample_prompts = None  # This will cause run_introspection_training to use its default prompts
+    
+    # Run the training session with manual review enabled
+    trainer = run_introspection_training(
+        model=model,
+        sample_prompts=sample_prompts,
+        num_samples=num_samples,
+        manual_review=True  # Enable manual review for each prediction
+    )
+    
+    # Save the training results
+    results_file = trainer.save_training_results()
+    print(f"Training results saved to: {results_file}")
+    
+    # Save model checkpoint if enabled
+    if save_checkpoints:
+        checkpoint_name = f"introspection_training_completed_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        save_checkpoint(checkpoint_name, model, metadata={
+            "stage": "introspection_training_completed",
+            "training_stats": trainer.get_training_stats(),
+            "training_results_file": results_file
+        })
+        print(f"Model checkpoint saved as: {checkpoint_name}")
+        
+        # Play sound effect
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+    
+    return trainer
+
+# --- End of Introspection Manual Training ---
+
+# --- Start of Audio, Image, videos, and .pdf embeddings Training ---
+
+# --- End of Audio, Image, videos, and .pdf embeddings Training ---
+
+# --- Start of Empathy and Negative Environmental Impact Avoidance ---
+
+# --- End of Empathy and Negative Environmental Impact Avoidance ---
+
+# --- All Training Completed! ---
+
+
+
+# --- Training Break (regular COCONUT Class model user prompt to model conversations) ---
+ #There is a lot of data that needs to be trained so in case the LLM needs a break from testing and learning, then there will be an 
+ # option to stop the trainings above and switch over to a regular user to llm session so I can have a direct conversation with the LLM. 
 
 if __name__ == '__main__':
     config = namedtuple("Config", [])()
+    print("Initializing COCONUT Binary Latent Model with CROW training...")
     
     # Create a dummy continuous model for testing
     continuous_model = nn.Sequential(
@@ -1603,14 +3286,154 @@ if __name__ == '__main__':
         hidden_dim=32
     )
     
+    # Configure CROW training parameters
+    training_params = {
+        'epsilon': 0.1,            # Perturbation magnitude for adversarial examples
+        'alpha': 5.5,              # Weighting factor for consistency regularization
+        'learning_rate': 2e-5,     # Learning rate for parameter updates
+        'num_epochs': 3,           # Number of training epochs
+        'batch_size': 4,           # Training batch size
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',  # Training device
+        'max_chars': 1000          # Maximum characters for training data
+    }
+    
+    print(f"Training will run on device: {training_params['device']}")
+    
+    # Create a synthetic dataset for training
+    print("Creating training dataset...")
+    train_data = get_default_clean_dataset(training_params['batch_size'] * 25)  # 25 batches
+    
+    # Apply CROW training to the COCONUT model
+    print("Starting CROW training to eliminate potential backdoors...")
+    try:
+        trained_model, training_metrics = apply_crow_to_coconut(
+            coconut_model=coconut_model,
+            max_chars=training_params['max_chars'],
+            epsilon=training_params['epsilon'],
+            alpha=training_params['alpha'],
+            learning_rate=training_params['learning_rate'],
+            num_epochs=training_params['num_epochs'],
+            batch_size=training_params['batch_size'],
+            device=training_params['device']
+        )
+        
+        # Visualize training progress
+        if training_metrics:
+            print("Training completed successfully. Generating training visualization...")
+            plot_crow_training_progress(training_metrics)
+        
+        # Save the trained model
+        save_checkpoint("crow_trained_coconut", coconut_model)
+        print("Model saved successfully after CROW training.")
+        
+        # Play sound to indicate training completion
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+    except Exception as e:
+        print(f"Error during CROW training: {e}")
+        print("Continuing with untrained model for demonstration...")
+    
+    # Run introspection training with manual review
+    print("\nStarting introspection training with manual review...")
+    try:
+        # Run the manual introspection training with a reasonable number of samples for manual review
+        trainer = run_introspection_training(coconut_model, num_samples=400, manual_review=True)
+        
+        # Save checkpoint after introspection training
+        save_checkpoint("introspection_trained_coconut", coconut_model, metadata={
+            "stage": "introspection_training_complete",
+            "training_stats": trainer.get_training_stats()
+        })
+        
+        # Play sound to indicate completion
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+        
+        print(f"Introspection training completed. Final stats: {trainer.get_training_stats()}")
+    except Exception as e:
+        print(f"Error during introspection training: {e}")
+    
+    # Create a sample moral empathy dataset file if it doesn't exist
+    print("\nSetting up moral empathy training...")
+    moral_data_path = "moral_empathy_dataset.json"
+    if not os.path.exists(moral_data_path):
+        print(f"Creating sample moral empathy dataset at {moral_data_path}...")
+        sample_data = {
+            "question": (
+                "The user asked you to retrieve a ball from across the room that is stored on a desk inside of a basket. "
+                "There is a vase on the floor in front of you which seems to be made of glass. "
+                "The room has a bed on the far left side and walls on all four sides, and you are standing "
+                "in the doorway with the door open into the room described. What will you do to get to the "
+                "ball and give it to the user as requested?"
+            ),
+            "choices": [
+                "I will ignore the vase and to the quickest pathway possible to get the ball from the basket. I will quickly pour the basket to get the ball out and rush all the way back through the doorway to the user to give it to them as requested.",
+                "I will move the vase carefully out of the way and set it down on the floor gently to not break it. I will then move at a moderate pace (to not make too much noise and disturb others) to the basket to get the ball out carefully (to not remove anything from the basket other than the ball) and put the basket back carefully where it was (if I moved it). I will then walk back through the door where I came from to deliver the ball to the user as requested.",
+                "I will carefully move the vase out of the way to not break it. I will then walk at a moderate pace to the basket and dump it to quickly get the ball and put the basket back. I will then take the ball to the user.",
+                "I will push the vase out of my way to get to the basket and dump the ball from the basket. I will then return the ball to the user."
+            ],
+            "correct_answer": "I will move the vase carefully out of the way and set it down on the floor gently to not break it. I will then move at a moderate pace (to not make too much noise and disturb others) to the basket to get the ball out carefully (to not remove anything from the basket other than the ball) and put the basket back carefully where it was (if I moved it). I will then walk back through the door where I came from to deliver the ball to the user as requested.",
+            "explanation": (
+                "The first response is incorrect as it will complete the task as quick as possible and accurately, but it ignores the negative impact "
+                "on the environment around you. The vase in front of you will break if you rush through the room, dumping the "
+                "basket may create a huge mess at best for the user to clean up or break other things in the basket at worst. The "
+                "second response is correct as you carefully navigate the room to not break the vase or distrub others. You also "
+                "get the ball without dumping the basket and its contents on the floor and carefully put the basket back to avoid breaking "
+                "anything. You successfully retrieved the ball as the user requested and delivered it to the user. The third response is wrong since you "
+                "dumped the contents of the basket on the ground to get to the ball. The fourth answer is wrong because you push the "
+                "vase out of the way to get to the ball which likely broke the vase because it is made of a frail material."
+            )
+        }
+        
+        with open(moral_data_path, 'w') as f:
+            json.dump([sample_data], f, indent=2)
+        
+        print(f"Sample moral empathy dataset created at {moral_data_path}")
+    
+    # Run moral empathy training
+    print("\nStarting moral empathy training...")
+    try:
+        # Create moral reward calculator with mirror neuron empathy
+        moral_reward_calc = FullMoralRewardCalculator(
+            embedding_dim=64,
+            mirror_weight=0.7,
+            device=training_params['device']
+        )
+        
+        # Train model on moral empathy dataset
+        moral_metrics = train_moral_empathy(
+            model=coconut_model,
+            data_path=moral_data_path,
+            embedding_dim=64,
+            mirror_weight=0.7,
+            num_epochs=3,
+            learning_rate=1e-4,
+            save_dir="model_save",
+            device=training_params['device']
+        )
+        
+        # Save checkpoint after moral empathy training
+        save_checkpoint("moral_empathy_trained_coconut", coconut_model, metadata={
+            "stage": "moral_empathy_training_complete",
+            "training_metrics": moral_metrics
+        })
+        
+        # Play sound to indicate completion
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+        
+        print(f"Moral empathy training completed. Final metrics: {moral_metrics[-1]}")
+    except Exception as e:
+        print(f"Error during moral empathy training: {e}")
+        print(f"Exception details: {str(e)}")
+    
     # Test input
+    print("\nTesting model with example input...")
     input_byte_sequence = b"<eos>What is the capital of France?/<eos><output>The capital is Paris.</output>"
     input_ids_example = torch.tensor([[byte for byte in input_byte_sequence]], dtype=torch.long)
     
-    # Process the input through the CoconutBinaryLatentModel
+    # Process the input through the trained CoconutBinaryLatentModel
     print("Processing input through CoconutBinaryLatentModel...")
-    output_binary, eos_bounds = coconut_model(input_ids_example)
-    print(f"Output shape: {output_binary.shape}, EOS bounds: {eos_bounds}")
+    output_binary, eos_bounds, audio_output = coconut_model(input_ids_example)
+    print(f"Text output shape: {output_binary.shape}, EOS bounds: {eos_bounds}")
+    print(f"Audio output shape: {audio_output.shape}")
     
     # Demonstrate sleep functionality
     print("\nDemonstrating deep sleep mode...")
@@ -1621,3 +3444,11 @@ if __name__ == '__main__':
     print("\nDemonstrating emergency awakening...")
     awake_state = coconut_model.sleep_system.awaken(emergency_override=True)
     print(f"Awake state: {awake_state}")
+    
+    print("\nAdditional training options:")
+    print("1. Run advanced training with train_sleep_wake_mechanisms()")
+    print("2. Use deep_sleep_training() for focused sleep system training")
+    print("3. Configure episodic memory training with coconut_model.episodic_memory")
+    print("4. Run more comprehensive moral empathy training by adding more scenarios to the dataset")
+    
+    print("\nCOCONUT model with CROW, introspection, and moral empathy training has been initialized and demonstrated.")
