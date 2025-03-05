@@ -8,7 +8,7 @@ import json
 import uuid
 from collections import OrderedDict
 import numpy as np
-import faiss
+#import faiss - Replacing Faiss with Falcon and k-group klustering for quicker memory retrieval without losing much accuracy. 
 from typing import Optional, List, Dict, Any, Tuple, Union
 import shutil
 import glob
@@ -17,6 +17,186 @@ import threading
 import math
 from concurrent.futures import ThreadPoolExecutor
 import warnings
+import falconn
+import lmdb
+import numpy as np
+import pickle
+from sklearn.cluster import MiniBatchKMeans
+
+#Need to pip install falconn, scikit-learn, lmdb, numpy for the Episodic Memory to function properly. 
+
+
+# Grok optimization for improving softmax and numeric stability in training
+class StableMax(nn.Module):
+    """
+    StableMax: A numerically stable alternative to Softmax that prevents Softmax Collapse.
+    
+    As described in the paper "Grokking at the Edge of Numerical Stability", StableMax
+    uses a function s(x) instead of exp(x) that grows linearly for x >= 0 and approaches
+    zero more slowly for x < 0, reducing the risk of numerical instability.
+    
+    The function s(x) has the following properties:
+    1. Monotonic increasing (like exp)
+    2. s(x) → ∞ as x → ∞
+    3. s(x) → 0 as x → -∞
+    4. s(0) = 1 (same as exp(0))
+    5. Linear growth for large positive values, reducing exponential overflow
+    6. More gradual approach to zero for negative values, reducing underflow
+    """
+    def __init__(self, alpha=1.0, stability_factor=1e-6):
+        """
+        Initialize StableMax with customizable parameters.
+        
+        Args:
+            alpha: Controls the slope of the linear region for positive values
+            stability_factor: Small constant added to denominator for numerical stability
+        """
+        super(StableMax, self).__init__()
+        self.alpha = alpha
+        self.stability_factor = stability_factor
+    
+    def forward(self, x):
+        # For x >= 0: s(x) = x + 1
+        # For x < 0: s(x) = 1/(1-x)
+        positive_mask = (x >= 0).float()
+        negative_mask = (x < 0).float()
+        
+        s_x = positive_mask * (self.alpha * x + 1) + negative_mask * (1.0 / (1.0 - x))
+        
+        # Compute StableMax similar to Softmax: s(xi) / sum(s(xj))
+        sum_s_x = torch.sum(s_x, dim=-1, keepdim=True) + self.stability_factor
+        return s_x / sum_s_x
+
+class StableCrossEntropyLoss(nn.Module):
+    """
+    StableCrossEntropyLoss: A numerically stable alternative to CrossEntropyLoss
+    that uses StableMax instead of Softmax to prevent Softmax Collapse.
+    
+    This loss is particularly effective when used with the Grok optimization approach,
+    which focuses on maintaining numerical stability during long training runs.
+    """
+    def __init__(self, reduction='mean', alpha=1.0, stability_factor=1e-6,
+                 label_smoothing=0.0, gradient_clip=None):
+        """
+        Initialize StableCrossEntropyLoss with customizable parameters.
+        
+        Args:
+            reduction: Specifies the reduction to apply to the output ('none'|'mean'|'sum')
+            alpha: Controls the slope of the linear region in StableMax
+            stability_factor: Small constant for numerical stability
+            label_smoothing: Factor for label smoothing regularization (0.0-1.0)
+            gradient_clip: Optional value to clip gradients during backpropagation
+        """
+        super(StableCrossEntropyLoss, self).__init__()
+        self.stablemax = StableMax(alpha=alpha, stability_factor=stability_factor)
+        self.reduction = reduction
+        self.label_smoothing = label_smoothing
+        self.gradient_clip = gradient_clip
+        self.log_eps = 1e-8  # Constant to avoid log(0)
+    
+    def forward(self, logits, targets):
+        # Apply StableMax to get probabilities
+        probs = self.stablemax(logits)
+        
+        # Apply label smoothing if enabled
+        if self.label_smoothing > 0 and targets.dim() == logits.dim():
+            # For one-hot encoded targets
+            smooth_targets = targets * (1 - self.label_smoothing) + self.label_smoothing / targets.size(-1)
+            targets = smooth_targets
+        
+        # Compute cross-entropy loss
+        if targets.dim() == logits.dim() - 1:
+            # If targets are class indices
+            loss = -torch.log(probs.gather(1, targets.unsqueeze(1)).squeeze(1) + self.log_eps)
+        else:
+            # If targets are one-hot encoded
+            loss = -torch.sum(targets * torch.log(probs + self.log_eps), dim=-1)
+        
+        # Apply gradient clipping during backward if specified
+        if self.gradient_clip is not None and self.training:
+            # Register hook for gradient clipping
+            def grad_hook(grad):
+                return torch.clamp(grad, -self.gradient_clip, self.gradient_clip)
+            
+            for param in self.parameters():
+                if param.requires_grad:
+                    param.register_hook(grad_hook)
+        
+        # Apply reduction
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:  # 'none'
+            return loss
+
+def stable_softmax(x, dim=-1, alpha=1.0, stability_factor=1e-6):
+    """
+    A wrapper function to use StableMax instead of traditional softmax.
+    This provides an easy drop-in replacement for torch.softmax or F.softmax.
+    
+    Args:
+        x: Input tensor
+        dim: Dimension along which to compute StableMax
+        alpha: Controls the slope of the linear region for positive values
+        stability_factor: Small constant added to denominator for numerical stability
+        
+    Returns:
+        Tensor with StableMax applied along specified dimension
+    """
+    return StableMax(alpha=alpha, stability_factor=stability_factor)(x)
+
+def grok_stabilized_grad(gradient, weight, orthogonalize=True, clip_value=None):
+    """
+    Apply Grok stabilization to gradients as described in
+    "Grokking at the Edge of Numerical Stability".
+    
+    This function:
+    1. Optionally computes the orthogonal component of gradient
+    2. Optionally clips gradient values to enhance stability
+    
+    Args:
+        gradient: The gradient tensor to stabilize
+        weight: The weight tensor this gradient will be applied to
+        orthogonalize: Whether to compute orthogonal component (True/False)
+        clip_value: Optional value to clip gradients
+        
+    Returns:
+        Stabilized gradient tensor
+    """
+    if gradient is None:
+        return None
+    
+    # Start with original gradient
+    stabilized_grad = gradient
+    
+    # Apply orthogonalization if requested
+    if orthogonalize and weight.dim() > 1:
+        # Flatten tensors for dot product
+        flat_grad = gradient.view(-1)
+        flat_weight = weight.view(-1)
+        
+        # Compute weight norm squared
+        weight_norm_sq = torch.dot(flat_weight, flat_weight)
+        
+        if weight_norm_sq > 0:  # Avoid division by zero
+            # Compute projection coefficient
+            proj_coeff = torch.dot(flat_grad, flat_weight) / weight_norm_sq
+            
+            # Compute projection component
+            proj_component = proj_coeff * flat_weight
+            
+            # Orthogonal component = gradient - projection
+            orth_component = flat_grad - proj_component
+            
+            # Reshape back to original shape
+            stabilized_grad = orth_component.view(gradient.shape)
+    
+    # Apply gradient clipping if specified
+    if clip_value is not None:
+        stabilized_grad = torch.clamp(stabilized_grad, -clip_value, clip_value)
+    
+    return stabilized_grad
 
 # TOVA Compression (Token Omission Via Attention) for more efficient storage without memory quality loss.
 class TOVACompressor:
@@ -160,8 +340,8 @@ class TOVACompressor:
         # Get attention scores
         scores = self.get_attention_scores(embedding)
         
-        # Normalize scores to 0-1 range
-        norm_scores = torch.softmax(scores, dim=0)
+        # Normalize scores to 0-1 range using stable softmax with slightly higher alpha for better stability
+        norm_scores = stable_softmax(scores, dim=0, alpha=1.2, stability_factor=1e-8)
         
         # Find dimensions with scores above threshold
         mask = norm_scores > threshold / self.embedding_dim
@@ -360,8 +540,8 @@ class NeuralMemoryModule(nn.Module):
     This module learns to memorize at test time using a deep neural network.
     Additionally implements TOVA compression for efficient memory storage.
     """
-    def __init__(self, 
-                 embedding_dim: int = 768, 
+    def __init__(self,
+                 embedding_dim: int = 768,
                  hidden_dim: int = 512,
                  num_layers: int = 3,
                  surprise_threshold: float = 0.7,
@@ -371,7 +551,9 @@ class NeuralMemoryModule(nn.Module):
                  device=None,
                  use_tova: bool = True,
                  save_path: str = None,
-                 auto_save: bool = True):
+                 auto_save: bool = True,
+                 use_stable_loss: bool = True,
+                 use_grok_optim: bool = False):
         """
         Initialize the neural memory module.
         
@@ -399,6 +581,8 @@ class NeuralMemoryModule(nn.Module):
         self.device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.use_tova = use_tova
         self.save_path = save_path or "model_save/neural_memory_tova"
+        self.use_stable_loss = use_stable_loss
+        self.use_grok_optim = use_grok_optim
         
         # Initialize MLP layers
         self.layers = nn.ModuleList()
@@ -692,7 +876,16 @@ class NeuralMemoryModule(nn.Module):
         prediction = self.forward(x)
         
         # Calculate loss
-        loss = F.mse_loss(prediction, target, reduction='none').mean(dim=-1)
+        if self.use_stable_loss:
+            # Create StableCrossEntropyLoss on demand
+            stable_loss = StableCrossEntropyLoss(reduction='none')
+            # For MSE-like behavior, we need to convert to a specific format
+            # We'll calculate the error and then use it as logits for the loss
+            error = (prediction - target) ** 2
+            loss = stable_loss(error, torch.zeros_like(error)).mean(dim=-1)
+        else:
+            # Traditional MSE loss
+            loss = F.mse_loss(prediction, target, reduction='none').mean(dim=-1)
         
         # Get gradients of loss with respect to model parameters
         gradients = []
@@ -752,7 +945,14 @@ class NeuralMemoryModule(nn.Module):
         
         # Update memory parameters based on surprise and forget rate
         output = self.forward(x)
-        loss = F.mse_loss(output, target)
+        
+        # Use stable loss if enabled
+        if self.use_stable_loss:
+            stable_loss = StableCrossEntropyLoss(reduction='mean')
+            error = (output - target) ** 2
+            loss = stable_loss(error, torch.zeros_like(error))
+        else:
+            loss = F.mse_loss(output, target)
         
         # Calculate gradients
         gradients = torch.autograd.grad(loss, self.parameters(), create_graph=False)
@@ -760,6 +960,17 @@ class NeuralMemoryModule(nn.Module):
         # Update parameters with adaptive forgetting
         with torch.no_grad():
             for i, (param, grad) in enumerate(zip(self.parameters(), gradients)):
+                # Apply Grok stabilization to gradients if enabled
+                if self.use_grok_optim:
+                    # Use the grok_stabilized_grad function for proper gradient stabilization
+                    grad = grok_stabilized_grad(
+                        gradient=grad,
+                        weight=param.data,
+                        orthogonalize=True,
+                        clip_value=1.0  # Optional gradient clipping for additional stability
+                    )
+                
+                # Update parameter using stabilized gradient and adaptive forget rate
                 param.data = (1 - effective_forget_rate.mean()) * param.data - self.learning_rate * grad
         
         return surprise
@@ -1990,8 +2201,8 @@ class EpisodicMemory(nn.Module):
     Implements deep neural memory with multiple integration options and hierarchical storage
     for effectively unlimited memory across human timescales (100+ years).
     """
-    def __init__(self, 
-                 embedding_dim: int = 768, 
+    def __init__(self,
+                 embedding_dim: int = 768,
                  hidden_dim: int = 512,
                  capacity: int = 10_000_000_000,  # 10 billion memories (capacity for a lifetime)
                  max_active_memories: int = 10_000_000,  # 10 million active memories
@@ -2009,7 +2220,9 @@ class EpisodicMemory(nn.Module):
                  memory_compression_factor: float = 0.8,  # Compression factor for archived memories
                  use_lifetime_storage: bool = True,
                  multithread_operations: bool = True,
-                 memory_retention_policy: str = "importance_based"):
+                 memory_retention_policy: str = "importance_based",
+                 use_stable_loss: bool = True,
+                 use_grok_optim: bool = True):  # Enable Grok optimization by default
         """
         Initialize the ultra-high capacity episodic memory system.
         
@@ -2058,7 +2271,9 @@ class EpisodicMemory(nn.Module):
             surprise_threshold=surprise_threshold,
             learning_rate=learning_rate,
             momentum=momentum,
-            forget_rate=forget_rate
+            forget_rate=forget_rate,
+            use_stable_loss=use_stable_loss,
+            use_grok_optim=use_grok_optim
         )
         
         # Persistent memory module (input-independent)
@@ -2137,6 +2352,7 @@ class EpisodicMemory(nn.Module):
     def _create_billion_scale_index(self, embedding_dim):
         """
         Create a FAISS index optimized for billion-scale vector search.
+        Uses IndexIDMap to enable selective deletion for better performance.
         
         Args:
             embedding_dim: Dimension of the embeddings
@@ -2153,15 +2369,22 @@ class EpisodicMemory(nn.Module):
         quantizer = faiss.IndexFlatL2(embedding_dim)
         
         # Create the full index: IVF with flat storage
-        index = faiss.IndexIVFFlat(quantizer, embedding_dim, nlist, faiss.METRIC_L2)
+        base_index = faiss.IndexIVFFlat(quantizer, embedding_dim, nlist, faiss.METRIC_L2)
+        
+        # Wrap with IndexIDMap to enable selective deletion by ID
+        # This allows us to remove vectors without rebuilding the entire index
+        index = faiss.IndexIDMap(base_index)
         
         # To improve search speed at the cost of some accuracy, we can set nprobe
         # nprobe is the number of nearest centroids to search
-        index.nprobe = 256
+        base_index.nprobe = 256
         
         # Initialize with an empty training set (will be trained incrementally)
         # Note: For production, we would want to train this on a representative dataset
-        index.is_trained = False
+        base_index.is_trained = False
+        
+        # Store memory_id to faiss_id mapping for future lookup
+        self.memory_id_to_faiss_id = {}
         
         return index
     
@@ -2561,11 +2784,22 @@ class EpisodicMemory(nn.Module):
             if self.use_faiss:
                 embedding_np = embedding.detach().cpu().numpy().reshape(1, -1).astype(np.float32)
                 
-                # For IVF indexes, we need to train first if it's not trained
-                if not self.index.is_trained and isinstance(self.index, faiss.IndexIVFFlat):
-                    self.index.train(embedding_np)
+                # Generate a unique numeric ID for FAISS from the memory's UUID
+                # FAISS requires 64-bit integer IDs, so we convert the first 8 bytes of the UUID to int64
+                faiss_id = int(int.from_bytes(uuid.UUID(memory.id).bytes[:8], byteorder='big'))
                 
-                self.index.add(embedding_np)
+                # Store in our mapping
+                self.memory_id_to_faiss_id[memory.id] = faiss_id
+                
+                # For IVF indexes, we need to train first if it's not trained
+                is_ivf_index = False
+                if hasattr(self.index, 'index') and isinstance(self.index.index, faiss.IndexIVFFlat):
+                    is_ivf_index = True
+                    if not self.index.index.is_trained:
+                        self.index.index.train(embedding_np)
+                
+                # Add with ID to enable selective deletion later
+                self.index.add_with_ids(embedding_np, np.array([faiss_id], dtype=np.int64))
             
             # Also store in hierarchical storage for persistence
             if self.use_lifetime_storage:
@@ -2657,28 +2891,85 @@ class EpisodicMemory(nn.Module):
             self._update_memory_embeddings()
             
             if self.use_faiss:
-                # For billion-scale usage, we can't rebuild the index every time
-                # We would need to maintain a mapping of memory_id to index position
-                # and use selective deletion
+                # Collect IDs of memories being archived for selective deletion
+                faiss_ids_to_remove = []
+                
+                for memory in memories_to_archive:
+                    # Get FAISS ID from our mapping
+                    faiss_id = self.memory_id_to_faiss_id.get(memory.id)
+                    if faiss_id is not None:
+                        faiss_ids_to_remove.append(faiss_id)
+                        # Remove from our mapping
+                        del self.memory_id_to_faiss_id[memory.id]
+                
+                # Handle different index types
                 if isinstance(self.index, faiss.IndexFlatL2):
-                    # For flat index, we can just rebuild
+                    # For flat index, we still need to rebuild
                     self.index.reset()
                     if len(self.memories) > 0:
                         embeddings_np = self.memory_embeddings.detach().cpu().numpy().astype(np.float32)
                         self.index.add(embeddings_np)
+                elif isinstance(self.index, faiss.IndexIDMap):
+                    # For IndexIDMap, we can selectively remove vectors by ID
+                    if faiss_ids_to_remove:
+                        try:
+                            # Convert to numpy array of int64
+                            ids_array = np.array(faiss_ids_to_remove, dtype=np.int64)
+                            # Remove the vectors
+                            self.index.remove_ids(ids_array)
+                            print(f"Selectively removed {len(ids_array)} vectors from FAISS index")
+                        except Exception as e:
+                            print(f"Error during selective vector removal: {e}")
+                            # Fall back to rebuild if selective deletion fails
+                            self._rebuild_faiss_index_from_scratch()
                 else:
-                    # For billion-scale IVF index, rebuilding is very expensive
-                    # We would need to track IDs and use selective delete if supported
-                    # For now, we'll rebuild completely but in production would need optimization
-                    self.index = self._create_billion_scale_index(self.embedding_dim)
-                    if len(self.memories) > 0:
-                        embeddings_np = self.memory_embeddings.detach().cpu().numpy().astype(np.float32)
-                        if not self.index.is_trained:
-                            self.index.train(embeddings_np)
-                        self.index.add(embeddings_np)
+                    # For other index types or if something went wrong, rebuild
+                    self._rebuild_faiss_index_from_scratch()
             
             # Save archive index
             self._save_archive_index()
+    
+    def _rebuild_faiss_index_from_scratch(self):
+        """
+        Rebuild the FAISS index from scratch using current memories.
+        This is a fallback method used when selective deletion fails.
+        """
+        print("Rebuilding FAISS index from scratch...")
+        # Create a new billion-scale index
+        self.index = self._create_billion_scale_index(self.embedding_dim)
+        
+        # Clear the existing ID mapping
+        self.memory_id_to_faiss_id = {}
+        
+        if len(self.memories) > 0:
+            # Prepare batch of embeddings and IDs
+            embeddings_np = []
+            faiss_ids = []
+            
+            for memory in self.memories:
+                embedding_np = memory.embedding.detach().cpu().numpy().reshape(1, -1).astype(np.float32)
+                # Generate new FAISS ID
+                faiss_id = int(int.from_bytes(uuid.UUID(memory.id).bytes[:8], byteorder='big'))
+                
+                embeddings_np.append(embedding_np)
+                faiss_ids.append(faiss_id)
+                
+                # Update our mapping
+                self.memory_id_to_faiss_id[memory.id] = faiss_id
+            
+            # Stack all embeddings
+            embeddings_batch = np.vstack(embeddings_np)
+            faiss_ids_array = np.array(faiss_ids, dtype=np.int64)
+            
+            # Train the index if necessary
+            if hasattr(self.index, 'index') and isinstance(self.index.index, faiss.IndexIVFFlat):
+                if not self.index.index.is_trained:
+                    self.index.index.train(embeddings_batch)
+            
+            # Add all vectors with their IDs
+            self.index.add_with_ids(embeddings_batch, faiss_ids_array)
+            
+            print(f"Rebuilt FAISS index with {len(self.memories)} memories")
     
     def _save_archive_index(self):
         """Save the archive index to disk."""
@@ -2791,13 +3082,19 @@ class EpisodicMemory(nn.Module):
                     # Calculate similarity with all memories
                     similarities = torch.matmul(query_embedding, self.memory_embeddings.t()).squeeze()
                     
-                    # Get top k indices
+                    # Use StableMax for numerical stability when choosing top indices
                     if len(similarities.shape) == 0:  # Single value
                         top_indices = [0] if similarities.item() > 0 else []
                     else:
-                        top_values, top_indices = torch.topk(similarities, min(top_k, len(self.memories)))
-                        # Filter out negative similarities
-                        top_indices = [idx.item() for idx, val in zip(top_indices, top_values) if val.item() > 0]
+                        # Apply stable softmax to normalize similarities
+                        norm_similarities = stable_softmax(similarities, dim=0, alpha=1.0)
+                        
+                        # Get top k indices
+                        top_values, top_indices = torch.topk(norm_similarities, min(top_k, len(self.memories)))
+                        
+                        # Filter out very low similarities
+                        threshold = 1.0 / len(self.memories) * 0.1  # Dynamic threshold based on number of memories
+                        top_indices = [idx.item() for idx, val in zip(top_indices, top_values) if val.item() > threshold]
                     
                     # Get memory items from indices
                     active_results = [self.memories[idx] for idx in top_indices]

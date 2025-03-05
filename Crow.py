@@ -6,6 +6,487 @@ import json
 import datetime
 import numpy as np
 from datasets import load_dataset
+from torch.optim import Optimizer
+
+# Import Grok optimizers and utilities
+class StableMax(nn.Module):
+    """
+    StableMax: A numerically stable alternative to Softmax that prevents Softmax Collapse.
+    
+    As described in the paper "Grokking at the Edge of Numerical Stability", StableMax
+    uses a function s(x) instead of exp(x) that grows linearly for x >= 0 and approaches
+    zero more slowly for x < 0, reducing the risk of numerical instability.
+    """
+    def __init__(self):
+        super(StableMax, self).__init__()
+    
+    def forward(self, x):
+        # For x >= 0: s(x) = x + 1
+        # For x < 0: s(x) = 1/(1-x)
+        positive_mask = (x >= 0).float()
+        negative_mask = (x < 0).float()
+        
+        s_x = positive_mask * (x + 1) + negative_mask * (1.0 / (1.0 - x))
+        
+        # Compute StableMax similar to Softmax: s(xi) / sum(s(xj))
+        sum_s_x = torch.sum(s_x, dim=-1, keepdim=True)
+        return s_x / sum_s_x
+
+class StableCrossEntropyLoss(nn.Module):
+    """
+    StableCrossEntropyLoss: A numerically stable alternative to CrossEntropyLoss
+    that uses StableMax instead of Softmax to prevent Softmax Collapse.
+    """
+    def __init__(self, reduction='mean'):
+        super(StableCrossEntropyLoss, self).__init__()
+        self.stablemax = StableMax()
+        self.reduction = reduction
+    
+    def forward(self, logits, targets):
+        # Apply StableMax to get probabilities
+        probs = self.stablemax(logits)
+        
+        # Compute cross-entropy loss
+        if targets.dim() == logits.dim() - 1:
+            # If targets are class indices
+            loss = -torch.log(probs.gather(1, targets.unsqueeze(1)).squeeze(1) + 1e-10)
+        else:
+            # If targets are one-hot encoded
+            loss = -torch.sum(targets * torch.log(probs + 1e-10), dim=-1)
+        
+        # Apply reduction
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:  # 'none'
+            return loss
+
+
+class OrthoGrad(Optimizer):
+    """
+    ⊥Grad (Ortho-Grad): An optimizer that prevents Naïve Loss Minimization (NLM)
+    by only applying the component of the gradient that is orthogonal to the weights.
+    
+    As described in the paper "Grokking at the Edge of Numerical Stability", this
+    prevents weights from scaling in their current direction, which can lead to
+    numerical instability and delayed generalization.
+    """
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0):
+        """
+        Initialize OrthoGrad optimizer with Adam-like parameters.
+        
+        Args:
+            params (iterable): Iterable of parameters to optimize
+            lr (float, optional): Learning rate. Default: 1e-3
+            betas (Tuple[float, float], optional): Coefficients for computing
+                running averages of gradient and its square. Default: (0.9, 0.999)
+            eps (float, optional): Term added to denominator for numerical stability. Default: 1e-8
+            weight_decay (float, optional): Weight decay coefficient. Default: 0
+        """
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay)
+        super(OrthoGrad, self).__init__(params, defaults)
+    
+    def step(self, closure=None):
+        """
+        Perform a single optimization step, applying only the component of the
+        gradient that is orthogonal to the weights.
+        
+        Args:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss. Default: None
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+        
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                # Get gradient
+                grad = p.grad.data
+                
+                if group['weight_decay'] != 0:
+                    grad = grad.add(p.data, alpha=group['weight_decay'])
+                
+                # Compute orthogonal component of gradient
+                if p.dim() > 0:  # Skip scalar parameters (e.g., biases)
+                    # Flatten parameter and gradient
+                    p_flat = p.data.view(-1)
+                    grad_flat = grad.view(-1)
+                    
+                    # Compute the projection of grad onto p
+                    # proj = (p·grad / p·p) * p
+                    p_norm_sq = torch.dot(p_flat, p_flat)
+                    
+                    if p_norm_sq > 0:  # Avoid division by zero
+                        proj_coeff = torch.dot(p_flat, grad_flat) / p_norm_sq
+                        
+                        # Compute orthogonal component: grad_orth = grad - proj
+                        grad_proj = proj_coeff * p_flat
+                        grad_orth = grad_flat - grad_proj
+                        
+                        # Reshape back to original shape
+                        grad = grad_orth.view(grad.shape)
+                
+                # Apply Adam-like update with the orthogonal gradient
+                state = self.state[p]
+                
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
+                
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
+                
+                state['step'] += 1
+                
+                # Update biased first moment estimate (momentum)
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                # Update biased second raw moment estimate
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                
+                # Bias correction
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                
+                # Compute adaptive learning rate
+                denom = (exp_avg_sq.sqrt() / (bias_correction2 ** 0.5)).add_(group['eps'])
+                
+                # Apply update
+                step_size = group['lr'] / bias_correction1
+                p.data.addcdiv_(exp_avg, denom, value=-step_size)
+        
+        return loss
+
+
+class OrthoAdamW(Optimizer):
+    """
+    ⊥AdamW (Ortho-AdamW): A variant of AdamW that only applies the component of the
+    gradient that is orthogonal to the weights.
+    
+    This combines the benefits of AdamW with the orthogonal gradient approach
+    of ⊥Grad to prevent Naïve Loss Minimization.
+    """
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01,
+                 amsgrad=False):
+        """
+        Initialize OrthoAdamW optimizer with AdamW-like parameters.
+        
+        Args:
+            params (iterable): Iterable of parameters to optimize
+            lr (float, optional): Learning rate. Default: 1e-3
+            betas (Tuple[float, float], optional): Coefficients for computing
+                running averages of gradient and its square. Default: (0.9, 0.999)
+            eps (float, optional): Term added to denominator for numerical stability. Default: 1e-8
+            weight_decay (float, optional): Weight decay coefficient. Default: 0.01
+            amsgrad (bool, optional): Whether to use the AMSGrad variant. Default: False
+        """
+        if not 0.0 <= lr:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if not 0.0 <= eps:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
+        if not 0.0 <= weight_decay:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+            
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        super(OrthoAdamW, self).__init__(params, defaults)
+    
+    def __setstate__(self, state):
+        super(OrthoAdamW, self).__setstate__(state)
+        for group in self.param_groups:
+            group.setdefault('amsgrad', False)
+    
+    def step(self, closure=None):
+        """
+        Perform a single optimization step, applying only the component of the
+        gradient that is orthogonal to the weights.
+        
+        Args:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss. Default: None
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+        
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                # Get gradient
+                grad = p.grad.data
+                
+                # Compute orthogonal component of gradient
+                if p.dim() > 0:  # Skip scalar parameters (e.g., biases)
+                    # Flatten parameter and gradient
+                    p_flat = p.data.view(-1)
+                    grad_flat = grad.view(-1)
+                    
+                    # Compute the projection of grad onto p
+                    p_norm_sq = torch.dot(p_flat, p_flat)
+                    
+                    if p_norm_sq > 0:  # Avoid division by zero
+                        proj_coeff = torch.dot(p_flat, grad_flat) / p_norm_sq
+                        
+                        # Compute orthogonal component: grad_orth = grad - proj
+                        grad_proj = proj_coeff * p_flat
+                        grad_orth = grad_flat - grad_proj
+                        
+                        # Reshape back to original shape
+                        grad = grad_orth.view(grad.shape)
+                
+                if group['weight_decay'] != 0:
+                    # Unlike traditional AdamW which modifies grad, we apply weight decay directly to parameters
+                    p.data.mul_(1 - group['lr'] * group['weight_decay'])
+                
+                # Apply AdamW-like update with the orthogonal gradient
+                amsgrad = group['amsgrad']
+                state = self.state[p]
+                
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    # Exponential moving average of gradient values
+                    state['exp_avg'] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                    # Exponential moving average of squared gradient values
+                    state['exp_avg_sq'] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                    if amsgrad:
+                        # Maintains max of all exp. moving avg. of sq. grad. values
+                        state['max_exp_avg_sq'] = torch.zeros_like(p.data, memory_format=torch.preserve_format)
+                
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                if amsgrad:
+                    max_exp_avg_sq = state['max_exp_avg_sq']
+                beta1, beta2 = group['betas']
+                
+                state['step'] += 1
+                
+                # Update biased first moment estimate (momentum)
+                exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+                # Update biased second raw moment estimate
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                
+                if amsgrad:
+                    # Maintains the maximum of all 2nd moment running avg. till now
+                    torch.maximum(max_exp_avg_sq, exp_avg_sq, out=max_exp_avg_sq)
+                    # Use the max. for normalizing running avg. of gradient
+                    denom = max_exp_avg_sq.sqrt().add_(group['eps'])
+                else:
+                    denom = exp_avg_sq.sqrt().add_(group['eps'])
+                
+                # Bias correction
+                bias_correction1 = 1 - beta1 ** state['step']
+                bias_correction2 = 1 - beta2 ** state['step']
+                step_size = group['lr'] * (bias_correction2 ** 0.5) / bias_correction1
+                
+                # Apply update
+                p.data.addcdiv_(exp_avg, denom, value=-step_size)
+        
+        return loss
+
+
+class OrthoSGD(Optimizer):
+    """
+    OrthoSGD: A variant of SGD that only applies the component of the
+    gradient that is orthogonal to the weights.
+    """
+    def __init__(self, params, lr=0.01, momentum=0, dampening=0, weight_decay=0, nesterov=False):
+        """
+        Initialize OrthoSGD optimizer with SGD-like parameters.
+        
+        Args:
+            params (iterable): Iterable of parameters to optimize
+            lr (float): Learning rate. Default: 0.01
+            momentum (float, optional): Momentum factor. Default: 0
+            dampening (float, optional): Dampening for momentum. Default: 0
+            weight_decay (float, optional): Weight decay coefficient. Default: 0
+            nesterov (bool, optional): Enables Nesterov momentum. Default: False
+        """
+        defaults = dict(lr=lr, momentum=momentum, dampening=dampening,
+                       weight_decay=weight_decay, nesterov=nesterov)
+        
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+        
+        super(OrthoSGD, self).__init__(params, defaults)
+    
+    def step(self, closure=None):
+        """
+        Perform a single optimization step, applying only the component of the
+        gradient that is orthogonal to the weights.
+        
+        Args:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss. Default: None
+        """
+        loss = None
+        if closure is not None:
+            loss = closure()
+        
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+            
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                # Get gradient
+                grad = p.grad.data
+                
+                if weight_decay != 0:
+                    grad = grad.add(p.data, alpha=weight_decay)
+                
+                # Compute orthogonal component of gradient
+                if p.dim() > 0:  # Skip scalar parameters (e.g., biases)
+                    # Flatten parameter and gradient
+                    p_flat = p.data.view(-1)
+                    grad_flat = grad.view(-1)
+                    
+                    # Compute the projection of grad onto p
+                    p_norm_sq = torch.dot(p_flat, p_flat)
+                    
+                    if p_norm_sq > 0:  # Avoid division by zero
+                        proj_coeff = torch.dot(p_flat, grad_flat) / p_norm_sq
+                        
+                        # Compute orthogonal component: grad_orth = grad - proj
+                        grad_proj = proj_coeff * p_flat
+                        grad_orth = grad_flat - grad_proj
+                        
+                        # Reshape back to original shape
+                        grad = grad_orth.view(grad.shape)
+                
+                # Apply SGD-like update with the orthogonal gradient
+                if momentum != 0:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        buf = param_state['momentum_buffer'] = torch.zeros_like(p.data)
+                        buf.mul_(momentum).add_(grad)
+                    else:
+                        buf = param_state['momentum_buffer']
+                        buf.mul_(momentum).add_(grad, alpha=1 - dampening)
+                    
+                    if nesterov:
+                        grad = grad.add(buf, alpha=momentum)
+                    else:
+                        grad = buf
+                
+                # Apply update
+                p.data.add_(grad, alpha=-group['lr'])
+        
+        return loss
+
+
+def replace_optimizer(model, optimizer_type="OrthoAdamW", **kwargs):
+    """
+    Replace the optimizer in a model with an orthogonal gradient optimizer.
+    
+    Args:
+        model: The model whose optimizer to replace
+        optimizer_type (str): "OrthoGrad", "OrthoAdamW", or "OrthoSGD". Default: "OrthoAdamW"
+        **kwargs: Optimizer parameters like lr, weight_decay, etc.
+    
+    Returns:
+        The new optimizer instance
+    """
+    # Get parameters requiring gradients
+    params = [p for p in model.parameters() if p.requires_grad]
+    
+    # Set default learning rate if not provided
+    if 'lr' not in kwargs:
+        kwargs['lr'] = 1e-3
+    
+    # Create the specified optimizer
+    if optimizer_type.lower() == "orthograd":
+        optimizer = OrthoGrad(params, **kwargs)
+    elif optimizer_type.lower() == "orthoadamw":
+        optimizer = OrthoAdamW(params, **kwargs)
+    elif optimizer_type.lower() == "orthosgd":
+        optimizer = OrthoSGD(params, **kwargs)
+    else:
+        raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
+    
+    # If the model has an attribute 'optimizer', replace it
+    if hasattr(model, 'optimizer'):
+        model.optimizer = optimizer
+    
+    return optimizer
+
+
+def use_stablemax_loss(model, **kwargs):
+    """
+    Replace the standard CrossEntropyLoss with StableCrossEntropyLoss
+    to prevent Softmax Collapse.
+    
+    Args:
+        model: The model whose loss function to replace
+        **kwargs: Loss function parameters
+    
+    Returns:
+        The new StableCrossEntropyLoss instance
+    """
+    loss_fn = StableCrossEntropyLoss(**kwargs)
+    
+    # If the model has a 'criterion' or 'loss_fn' attribute, replace it
+    if hasattr(model, 'criterion'):
+        model.criterion = loss_fn
+    elif hasattr(model, 'loss_fn'):
+        model.loss_fn = loss_fn
+    
+    return loss_fn
+
+
+def use_grokking_optimizations(model, loss=True, optimizer=True, optimizer_type="OrthoAdamW",
+                             optim_kwargs=None, loss_kwargs=None):
+    """
+    Apply the optimizations from the paper "Grokking at the Edge of Numerical Stability"
+    to help the model grok faster.
+    
+    Args:
+        model: The model to optimize
+        loss (bool): Whether to replace the loss function. Default: True
+        optimizer (bool): Whether to replace the optimizer. Default: True
+        optimizer_type (str): "OrthoGrad", "OrthoAdamW" or "OrthoSGD". Default: "OrthoAdamW"
+        optim_kwargs (dict): Optimizer parameters. Default: None
+        loss_kwargs (dict): Loss function parameters. Default: None
+    
+    Returns:
+        tuple: (new_loss_fn, new_optimizer) or just the one that was replaced
+    """
+    optim_kwargs = optim_kwargs or {}
+    loss_kwargs = loss_kwargs or {}
+    
+    new_loss_fn = None
+    new_optimizer = None
+    
+    if loss:
+        new_loss_fn = use_stablemax_loss(model, **loss_kwargs)
+    
+    if optimizer:
+        new_optimizer = replace_optimizer(model, optimizer_type, **optim_kwargs)
+    
+    if loss and optimizer:
+        return new_loss_fn, new_optimizer
+    elif loss:
+        return new_loss_fn
+    elif optimizer:
+        return new_optimizer
+    else:
+        return None
 
 class CROWBackdoorElimination:
     """
@@ -22,9 +503,9 @@ class CROWBackdoorElimination:
     2. Adversarial consistency training - ensures that even with perturbed inputs, the model's
        hidden state transitions remain consistent, thereby neutralizing backdoor effects
     """
-    def __init__(self, model, epsilon=0.1, alpha=5.5, learning_rate=2e-5, 
+    def __init__(self, model, epsilon=0.1, alpha=5.5, learning_rate=2e-5,
                  warmup_ratio=0.1, batch_size=4, num_epochs=3, device='cuda',
-                 targeted_refusal_alpha=11.0):
+                 targeted_refusal_alpha=11.0, optimizer_type="adamw", use_stable_loss=False):
         """
         Initialize the CROW backdoor elimination module.
         
@@ -36,9 +517,15 @@ class CROWBackdoorElimination:
             learning_rate: Learning rate for parameter updates (default: 2e-5)
             warmup_ratio: Ratio of steps for learning rate warmup (default: 0.1)
             batch_size: Training batch size (default: 4)
-            num_epochs: Number of training epochs (default: 3) 
+            num_epochs: Number of training epochs (default: 3)
             device: Device to perform training on (default: 'cuda')
             targeted_refusal_alpha: Higher alpha value for targeted refusal tasks (default: 11.0)
+            optimizer_type: Type of optimizer to use. Options are:
+                          - "adamw" (default): Standard AdamW optimizer
+                          - "orthograd": Orthogonal gradient optimizer (Grok paper)
+                          - "orthoadamw": Orthogonal AdamW optimizer (Grok paper)
+                          - "orthosgd": Orthogonal SGD optimizer (Grok paper)
+            use_stable_loss: Whether to use StableCrossEntropyLoss for numerical stability (default: False)
         """
         self.model = model
         self.epsilon = epsilon
@@ -49,6 +536,8 @@ class CROWBackdoorElimination:
         self.num_epochs = num_epochs
         self.device = device
         self.targeted_refusal_alpha = targeted_refusal_alpha
+        self.optimizer_type = optimizer_type.lower()
+        self.use_stable_loss = use_stable_loss
         
         # Track training progress and metrics
         self.training_metrics = {
@@ -180,13 +669,45 @@ class CROWBackdoorElimination:
         """
         print("Starting CROW Backdoor Elimination training...")
         
-        # Set up optimizer with cosine decay and warmup
-        optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=self.learning_rate,
-            betas=(0.9, 0.999),
-            eps=1e-8
-        )
+        # Set up optimizer and loss using the Grok optimizations
+        optim_kwargs = {
+            'lr': self.learning_rate,
+            'betas': (0.9, 0.999),
+            'eps': 1e-8,
+            'weight_decay': 0.01
+        }
+        
+        if self.optimizer_type.lower() not in ["adamw", "orthograd", "orthoadamw", "orthosgd"]:
+            print(f"Invalid optimizer type: {self.optimizer_type}, defaulting to AdamW")
+            self.optimizer_type = "adamw"
+        
+        # If using standard AdamW, set it up directly
+        if self.optimizer_type.lower() == "adamw":
+            print("Using standard AdamW optimizer for CROW training")
+            optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                **optim_kwargs
+            )
+            
+            if self.use_stable_loss:
+                print("Using StableCrossEntropyLoss for numerical stability")
+                use_stablemax_loss(self.model)
+        else:
+            # Use the Grok optimization function to set up optimizer and loss
+            print(f"Using {self.optimizer_type} optimizer for CROW training")
+            result = use_grokking_optimizations(
+                model=self.model,
+                loss=self.use_stable_loss,
+                optimizer=True,
+                optimizer_type=self.optimizer_type,
+                optim_kwargs=optim_kwargs
+            )
+            
+            # Extract the optimizer from the result
+            if self.use_stable_loss:
+                _, optimizer = result
+            else:
+                optimizer = result
         
         # Set up learning rate scheduler
         total_steps = len(train_dataset) // self.batch_size * self.num_epochs
@@ -230,7 +751,15 @@ class CROWBackdoorElimination:
                 
                 # Forward pass with adversarial embeddings
                 outputs = self.model(inputs_embeds=adv_embeds, labels=labels)
-                llm_loss = outputs.loss  # Standard language modeling loss
+                
+                # Use the stable loss if requested, otherwise use standard loss
+                if self.use_stable_loss and hasattr(self.model, 'loss_fn'):
+                    # Use the StableCrossEntropyLoss that was set up earlier
+                    logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+                    llm_loss = self.model.loss_fn(logits, labels)
+                else:
+                    # Standard language modeling loss
+                    llm_loss = outputs.loss
                 
                 # Get hidden states for adversarial embeddings
                 hidden_states_adv = self._get_hidden_states(None, adv_embeds)
@@ -450,8 +979,29 @@ class CROWBackdoorElimination:
         # This would detect malicious code patterns
         # Returning random values as placeholder
         return torch.rand(1).item()
+    def _get_optimizer_description(self):
+        """
+        Get a human-readable description of the optimizer configuration.
+        
+        Returns:
+            String describing the optimizer setup
+        """
+        descriptions = {
+            "adamw": "Standard AdamW optimizer with adaptive learning rates and weight decay",
+            "orthograd": "Orthogonal Gradient optimizer that prevents weights from scaling in their current direction",
+            "orthoadamw": "AdamW variant that applies only the orthogonal component of gradients to prevent numerical instability",
+            "orthosgd": "SGD variant that applies only the orthogonal component of gradients"
+        }
+        
+        base_desc = descriptions.get(self.optimizer_type.lower(), "Custom optimizer")
+        
+        if self.use_stable_loss:
+            return f"{base_desc}, with StableCrossEntropyLoss for numerical stability"
+        else:
+            return base_desc
     
     def _save_purified_model(self):
+
         """Save the CROW-purified model"""
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         model_dir = "model_save"
@@ -477,6 +1027,12 @@ class CROWBackdoorElimination:
             "warmup_ratio": self.warmup_ratio,
             "batch_size": self.batch_size,
             "num_epochs": self.num_epochs,
+            "optimizer": {
+                "type": self.optimizer_type,
+                "use_stable_loss": self.use_stable_loss,
+                "grok_optimizations": True if self.optimizer_type != "adamw" or self.use_stable_loss else False,
+                "description": self._get_optimizer_description()
+            },
             "timestamp": timestamp,
             "model_type": type(self.model).__name__
         }
@@ -488,8 +1044,9 @@ class CROWBackdoorElimination:
         print(f"Configuration saved: {config_path}")
 
 def apply_crow_training(model, train_data=None, epsilon=0.1, alpha=5.5, learning_rate=2e-5,
-                        num_epochs=3, batch_size=4, device='cuda', use_redpajama=True, 
-                        use_binary_patching=True, entropy_predictor=None, entropy_threshold=0.8, tokenizer=None):
+                        num_epochs=3, batch_size=4, device='cuda', use_redpajama=True,
+                        use_binary_patching=True, entropy_predictor=None, entropy_threshold=0.8, tokenizer=None,
+                        optimizer_type="adamw", use_stable_loss=False):
     """
     Apply CROW backdoor elimination training to a model.
     
@@ -510,6 +1067,9 @@ def apply_crow_training(model, train_data=None, epsilon=0.1, alpha=5.5, learning
         use_binary_patching: Whether to use binary patching for COCONUT models (default: False)
         entropy_predictor: ByteEntropyPredictor for dynamic binary patching (required if binary_patching=True)
         entropy_threshold: Threshold for entropy-based patching (default: 0.8)
+        optimizer_type: Type of optimizer to use (default: "adamw")
+                      Options: "adamw", "orthograd", "orthoadamw", "orthosgd"
+        use_stable_loss: Whether to use StableCrossEntropyLoss for numerical stability (default: False)
         
     Returns:
         Purified model and training metrics
@@ -554,7 +1114,9 @@ def apply_crow_training(model, train_data=None, epsilon=0.1, alpha=5.5, learning
         learning_rate=learning_rate,
         num_epochs=num_epochs,
         batch_size=batch_size,
-        device=device
+        device=device,
+        optimizer_type=optimizer_type,
+        use_stable_loss=use_stable_loss
     )
     
     # Apply CROW training
@@ -563,8 +1125,9 @@ def apply_crow_training(model, train_data=None, epsilon=0.1, alpha=5.5, learning
     # Return the purified model and metrics
     return model, metrics
 
-def apply_crow_to_coconut(coconut_model, max_chars=1000, epsilon=0.1, alpha=5.5, 
-                          learning_rate=2e-5, num_epochs=3, batch_size=4, device='cuda'):
+def apply_crow_to_coconut(coconut_model, max_chars=1000, epsilon=0.1, alpha=5.5,
+                          learning_rate=2e-5, num_epochs=3, batch_size=4, device='cuda',
+                          optimizer_type="adamw", use_stable_loss=False):
     """
     Apply CROW backdoor elimination specifically to a CoconutBinaryLatentModel.
     This function is designed to work with the binary patching approach used in COCONUT.
@@ -578,6 +1141,9 @@ def apply_crow_to_coconut(coconut_model, max_chars=1000, epsilon=0.1, alpha=5.5,
         num_epochs: Number of training epochs (default: 3)
         batch_size: Training batch size (default: 4)
         device: Device to perform training on (default: 'cuda')
+        optimizer_type: Type of optimizer to use (default: "adamw")
+                      Options: "adamw", "orthograd", "orthoadamw", "orthosgd"
+        use_stable_loss: Whether to use StableCrossEntropyLoss for numerical stability (default: False)
         
     Returns:
         Purified model and training metrics
@@ -614,7 +1180,9 @@ def apply_crow_to_coconut(coconut_model, max_chars=1000, epsilon=0.1, alpha=5.5,
         num_epochs=num_epochs,
         batch_size=batch_size,
         device=device,
-        use_redpajama=False  # Already loaded the dataset
+        use_redpajama=False,  # Already loaded the dataset
+        optimizer_type=optimizer_type,
+        use_stable_loss=use_stable_loss
     )
 
 # --- ByteEntropyPredictor ---
@@ -878,11 +1446,30 @@ def get_redpajama_dataset(max_chars=1000):
                     # Calculate character count for this sample
                     sample_chars = len(text)
                     
-                    # If this sample would exceed our character limit, truncate it
+                    # If this sample would exceed our character limit, find a proper truncation point
                     remaining_chars = max_chars - char_count
                     if sample_chars > remaining_chars:
-                        text = text[:remaining_chars]
-                        sample_chars = remaining_chars
+                        # Start with the minimum required characters
+                        truncation_point = remaining_chars
+                        
+                        # Look for sentence-ending punctuation after the minimum point
+                        sentence_end_punct = ['.', '!', '?', '\n']
+                        
+                        # Only search within a reasonable distance after the minimum point
+                        # to avoid extremely long texts if no punctuation is found
+                        max_lookahead = min(100, sample_chars - remaining_chars)
+                        
+                        for i in range(remaining_chars, remaining_chars + max_lookahead):
+                            if i >= len(text):
+                                break
+                            if text[i] in sentence_end_punct:
+                                # Found a sentence ending, include it in the truncation
+                                truncation_point = i + 1
+                                break
+                        
+                        # Truncate at the determined point
+                        text = text[:truncation_point]
+                        sample_chars = len(text)
                         
                     # Add the processed sample to our dataset
                     self.data.append({"text": text})

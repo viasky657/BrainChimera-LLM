@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import datetime
+
 import time
 import os
 import json
@@ -20,6 +21,72 @@ from AudioDecoderforCOCONUT import AudioDecoder
 from COCONUTWLatentThinking import CoconutBinaryLatentModel
 from COCONUTWLatentThinking import play_sound
 from COCONUTWLatentThinking import save_checkpoint
+
+"""
+This module provides introspection reward training for the COCONUT model.
+
+It now includes StableMax and StableCrossEntropyLoss optimizations from GrokOptimizers:
+- StableMax: A numerically stable alternative to Softmax that prevents Softmax Collapse
+- StableCrossEntropyLoss: Uses StableMax instead of traditional Softmax for better numerical stability
+
+To use these optimizations, pass use_stable_softmax=True to run_introspection_training() or
+use the --use-stable-softmax flag when running via the command line.
+"""
+
+class StableMax(nn.Module):
+    """
+    StableMax: A numerically stable alternative to Softmax that prevents Softmax Collapse.
+    
+    As described in the paper "Grokking at the Edge of Numerical Stability", StableMax
+    uses a function s(x) instead of exp(x) that grows linearly for x >= 0 and approaches
+    zero more slowly for x < 0, reducing the risk of numerical instability.
+    """
+    def __init__(self):
+        super(StableMax, self).__init__()
+    
+    def forward(self, x):
+        # For x >= 0: s(x) = x + 1
+        # For x < 0: s(x) = 1/(1-x)
+        positive_mask = (x >= 0).float()
+        negative_mask = (x < 0).float()
+        
+        s_x = positive_mask * (x + 1) + negative_mask * (1.0 / (1.0 - x))
+        
+        # Compute StableMax similar to Softmax: s(xi) / sum(s(xj))
+        sum_s_x = torch.sum(s_x, dim=-1, keepdim=True)
+        return s_x / sum_s_x
+
+
+class StableCrossEntropyLoss(nn.Module):
+    """
+    StableCrossEntropyLoss: A numerically stable alternative to CrossEntropyLoss
+    that uses StableMax instead of Softmax to prevent Softmax Collapse.
+    """
+    def __init__(self, reduction='mean'):
+        super(StableCrossEntropyLoss, self).__init__()
+        self.stablemax = StableMax()
+        self.reduction = reduction
+    
+    def forward(self, logits, targets):
+        # Apply StableMax to get probabilities
+        probs = self.stablemax(logits)
+        
+        # Compute cross-entropy loss
+        if targets.dim() == logits.dim() - 1:
+            # If targets are class indices
+            loss = -torch.log(probs.gather(1, targets.unsqueeze(1)).squeeze(1) + 1e-10)
+        else:
+            # If targets are one-hot encoded
+            loss = -torch.sum(targets * torch.log(probs + 1e-10), dim=-1)
+        
+        # Apply reduction
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:  # 'none'
+            return loss
+
 
 class IntrospectionRewardTraining:
     """
@@ -339,7 +406,7 @@ class IntrospectionRewardTraining:
         return session_results
 
 
-def run_introspection_training(model, sample_prompts=None, num_samples=610, manual_review=True):
+def run_introspection_training(model, sample_prompts=None, num_samples=610, manual_review=True, use_stable_softmax=False):
     """
     Run introspection training on a set of sample prompts.
     
@@ -348,10 +415,24 @@ def run_introspection_training(model, sample_prompts=None, num_samples=610, manu
         sample_prompts: Optional list of sample prompts to use (if None, uses default samples)
         num_samples: Number of samples to use if using default samples
         manual_review: Whether to pause for manual review of each prediction
+        use_stable_softmax: Whether to use StableCrossEntropyLoss instead of standard CrossEntropyLoss
     
     Returns:
         trainer: The IntrospectionRewardTraining instance after training
     """
+    # If stable softmax is requested, replace any CrossEntropyLoss with StableCrossEntropyLoss
+    if use_stable_softmax and hasattr(model, 'criterion'):
+        reduction = 'mean'
+        if isinstance(model.criterion, CrossEntropyLoss):
+            reduction = model.criterion.reduction
+        model.criterion = StableCrossEntropyLoss(reduction=reduction)
+        print("Replaced standard CrossEntropyLoss with StableCrossEntropyLoss for numerical stability")
+    elif use_stable_softmax and hasattr(model, 'loss_fn'):
+        reduction = 'mean'
+        if isinstance(model.loss_fn, CrossEntropyLoss):
+            reduction = model.loss_fn.reduction
+        model.loss_fn = StableCrossEntropyLoss(reduction=reduction)
+        print("Replaced standard CrossEntropyLoss with StableCrossEntropyLoss for numerical stability")
     # Initialize the trainer
     trainer = IntrospectionRewardTraining(model)
     
@@ -1021,6 +1102,7 @@ def run_introspection_training(model, sample_prompts=None, num_samples=610, manu
 
 # Example of running a training session
 if __name__ == "__main__" and "introspection_training" in sys.argv:
+    import sys
     # Create a model instance (if running standalone)
     config = namedtuple("Config", [])()
     continuous_model = nn.Sequential(
@@ -1028,15 +1110,23 @@ if __name__ == "__main__" and "introspection_training" in sys.argv:
         nn.ReLU()
     )
     
+    # Create the CoconutBinaryLatentModel
     coconut_model = CoconutBinaryLatentModel(
         continuous_model=continuous_model,
-        latent_transformer=None,  # This would need to be properly initialized
+        latent_transformer=CoconutBinaryLatentModel,
+        local_encoder=CoconutBinaryLatentModel.multiencoder,
         input_dim=64,
         hidden_dim=32
     )
     
+    # Determine whether to use stable softmax
+    use_stable_softmax = "--use-stable-softmax" in sys.argv
+    
     # Run introspection training
-    trainer = run_introspection_training(coconut_model)
+    trainer = run_introspection_training(
+        coconut_model,
+        use_stable_softmax=use_stable_softmax
+    )
     
     # Save training results
     results_path = trainer.save_training_results()

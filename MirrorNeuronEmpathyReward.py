@@ -6,38 +6,193 @@ import json
 import os
 import time
 from typing import Dict, List, Tuple, Optional, Any, Union
+from collections import defaultdict
+# Import Grok optimizers
+from GrokOptimizers import OrthoAdamW, OrthoGrad, OrthoSGD, StableCrossEntropyLoss, StableMax
+
+class CrossAttention(nn.Module):
+    """
+    Cross-attention module for integrating dynamic byte patches in empathy calculations.
+    This enables the model to attend to specific state representations across perspectives.
+    Now with StableMax for improved numerical stability.
+    """
+    def __init__(self, embed_dim, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+        
+        self.query_proj = nn.Linear(embed_dim, embed_dim)
+        self.key_proj = nn.Linear(embed_dim, embed_dim)
+        self.value_proj = nn.Linear(embed_dim, embed_dim)
+        self.output_proj = nn.Linear(embed_dim, embed_dim)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.stablemax = StableMax()  # Use StableMax for more numerically stable attention
+        
+        # For TOVA integration
+        self.use_kv_cache = False
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        
+    def enable_kv_caching(self):
+        """Enable KV caching for TOVA compression"""
+        self.use_kv_cache = True
+        
+    def reset_cache(self):
+        """Reset KV caches"""
+        self.k_cache = None
+        self.v_cache = None
+        self.attention_weights = None
+        
+    def forward(self, query, key_value):
+        """
+        Apply cross-attention between query and key_value tensors.
+        
+        Args:
+            query: Query tensor of shape [batch_size, seq_len_q, embed_dim]
+            key_value: Key-value tensor of shape [batch_size, seq_len_kv, embed_dim]
+            
+        Returns:
+            Output tensor of shape [batch_size, seq_len_q, embed_dim]
+        """
+        batch_size = query.shape[0]
+        
+        # Project queries, keys, and values
+        q = self.query_proj(query)
+        k = self.key_proj(key_value)
+        v = self.value_proj(key_value)
+        
+        # Reshape for multi-head attention
+        q = q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # Store key and value for KV caching if enabled
+        if self.use_kv_cache:
+            if self.k_cache is None or self.v_cache is None:
+                self.k_cache = k
+                self.v_cache = v
+            else:
+                # Append to cache
+                self.k_cache = torch.cat([self.k_cache, k], dim=2)  # Concat along seq_len dim
+                self.v_cache = torch.cat([self.v_cache, v], dim=2)  # Concat along seq_len dim
+                
+                # Use cached keys and values
+                k = self.k_cache
+                v = self.v_cache
+        
+        # Compute attention scores
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        # Use StableMax instead of softmax for greater numerical stability
+        attention_weights = self.stablemax(scores)
+        attention_weights = self.dropout(attention_weights)
+        
+        # Store attention weights for TOVA if KV caching is enabled
+        if self.use_kv_cache:
+            self.attention_weights = attention_weights
+        
+        # Apply attention weights to values
+        context = torch.matmul(attention_weights, v)
+        
+        # Reshape back
+        context = context.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
+        
+        # Apply output projection
+        output = self.output_proj(context)
+        
+        return output
+
+class EntropyPredictor(nn.Module):
+    """
+    Predicts entropy for dynamic patch boundaries based on state and action sequences.
+    Used to determine where to create patch boundaries for efficient processing.
+    """
+    def __init__(self, input_dim, hidden_dim=128):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        )
+        
+        self.entropy_head = nn.Linear(hidden_dim, 1)
+        
+    def forward(self, x):
+        """
+        Predict entropy for each position in the sequence.
+        
+        Args:
+            x: Input tensor of shape [batch_size, seq_len, input_dim]
+            
+        Returns:
+            Entropy predictions of shape [batch_size, seq_len, 1]
+        """
+        encoded = self.encoder(x)
+        entropy = self.entropy_head(encoded)
+        
+        # Apply sigmoid to get entropy values between 0 and 1
+        entropy = torch.sigmoid(entropy)
+        
+        return entropy
 
 class MirrorNeuronEmpathyReward(nn.Module):
     """
-    Implementation of the Mirror Neuron Empathy Reward component as described in the algorithm.
+    Implementation of the Mirror Neuron Empathy Reward component with dynamic byte patches,
+    cross-attention, and entropy processing for the COCONUT Latent class model.
     
     This module calculates empathy rewards based on mirror neuron theory, which allows the LLM
     to simulate and respond to the emotional states of others.
     
     The core formula implemented is:
     R_{emp}^{mirror}(s, a) = w_{mirror} * (1/N) \sum_{i=1}^{N} [Q_i(s^{others}, a) - Q_i(s^{others}, \emptyset)]
+    
+    Now integrated with dynamic patching and cross-attention for improved processing.
     """
     def __init__(
         self,
         embedding_dim: int,
         mirror_weight: float = 0.7,
         num_perspectives: int = 4,
+        entropy_threshold: float = 0.8,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        use_tova: bool = True,
+        num_heads: int = 4,
+        cache_max_size: int = 512,
     ):
         """
-        Initialize the Mirror Neuron Empathy Reward component.
+        Initialize the Mirror Neuron Empathy Reward component with support for dynamic byte patching.
         
         Args:
             embedding_dim: Dimension of state and action embeddings
             mirror_weight: Weight for the mirror neuron empathy component (w_{mirror})
             num_perspectives: Number of different Q-functions to use (N)
+            entropy_threshold: Threshold for determining patch boundaries based on entropy
             device: Device to run computations on
+            use_tova: Whether to use TOVA compression for KV caches
+            num_heads: Number of attention heads in cross-attention
+            cache_max_size: Maximum size of KV cache for TOVA compression
         """
         super().__init__()
         self.embedding_dim = embedding_dim
         self.mirror_weight = mirror_weight
         self.num_perspectives = num_perspectives
+        self.entropy_threshold = entropy_threshold
         self.device = device
+        self.use_tova = use_tova
+        self.cache_max_size = cache_max_size
+        
+        # Create cross-attention module for perspective integration
+        self.cross_attention = CrossAttention(embedding_dim, num_heads=num_heads)
+        
+        # Create entropy predictor for dynamic patching
+        self.entropy_predictor = EntropyPredictor(embedding_dim * 2)
         
         # Create multiple Q-value networks to represent different perspectives
         self.q_networks = nn.ModuleList([
@@ -54,23 +209,132 @@ class MirrorNeuronEmpathyReward(nn.Module):
                 if isinstance(layer, nn.Linear):
                     nn.init.xavier_normal_(layer.weight, gain=0.01)
                     nn.init.zeros_(layer.bias)
+        
+        # If TOVA is enabled, initialize KV caching
+        if use_tova:
+            self.cross_attention.enable_kv_caching()
+    
+    def calculate_shannon_entropy(self, probs):
+        """
+        Calculate Shannon entropy from a probability distribution.
+        
+        Args:
+            probs: Probability tensor of shape [batch_size, vocab_size]
+            
+        Returns:
+            Entropy value tensor of shape [batch_size]
+        """
+        # Add small epsilon to avoid log(0)
+        eps = 1e-9
+        log_probs = torch.log2(probs + eps)
+        entropy = -torch.sum(probs * log_probs, dim=-1)
+        return entropy
+    
+    def dynamic_patching(self, states, actions):
+        """
+        Apply dynamic patching based on entropy prediction.
+        
+        Args:
+            states: Tensor of states [batch_size, seq_len, embedding_dim]
+            actions: Tensor of actions [batch_size, seq_len, embedding_dim]
+            
+        Returns:
+            Patched states and actions with patch boundary indices
+        """
+        batch_size, seq_len, _ = states.shape
+        
+        # Concatenate states and actions for entropy prediction
+        state_action_pairs = torch.cat([states, actions], dim=2)
+        
+        # Predict entropy
+        entropies = self.entropy_predictor(state_action_pairs)
+        
+        # Find patch boundaries where entropy exceeds threshold
+        patch_boundaries = (entropies > self.entropy_threshold).squeeze(-1)
+        
+        # Create patches
+        patched_states = []
+        patched_actions = []
+        patch_indices = []
+        
+        for b in range(batch_size):
+            # Get boundaries for this batch item
+            boundaries = torch.nonzero(patch_boundaries[b]).squeeze(-1)
+            
+            # Add sequence end as final boundary if not already included
+            if boundaries.shape[0] == 0 or boundaries[-1] != seq_len - 1:
+                boundaries = torch.cat([boundaries, torch.tensor([seq_len - 1], device=boundaries.device)])
+            
+            # Initialize start index
+            start_idx = 0
+            
+            # Process each patch
+            for end_idx in boundaries:
+                # Extract patch
+                state_patch = states[b, start_idx:end_idx+1]
+                action_patch = actions[b, start_idx:end_idx+1]
+                
+                # Average pooling for the patch representation
+                pooled_state = state_patch.mean(dim=0, keepdim=True)
+                pooled_action = action_patch.mean(dim=0, keepdim=True)
+                
+                # Add to patched tensors
+                patched_states.append(pooled_state)
+                patched_actions.append(pooled_action)
+                patch_indices.append((b, start_idx, end_idx))
+                
+                # Update start index for next patch
+                start_idx = end_idx + 1
+        
+        # Stack patches if any exist
+        if patched_states:
+            patched_states = torch.cat(patched_states, dim=0)
+            patched_actions = torch.cat(patched_actions, dim=0)
+        else:
+            # Fallback if no patches were created
+            patched_states = states.view(-1, self.embedding_dim)
+            patched_actions = actions.view(-1, self.embedding_dim)
+            patch_indices = [(b, 0, seq_len-1) for b in range(batch_size)]
+        
+        return patched_states, patched_actions, patch_indices
+    
+    def apply_tova_compression(self):
+        """Apply TOVA compression to cross-attention KV cache if enabled"""
+        if not self.use_tova or not hasattr(self.cross_attention, 'attention_weights'):
+            return
+            
+        if (self.cross_attention.k_cache is not None and
+            self.cross_attention.v_cache is not None and
+            self.cross_attention.attention_weights is not None):
+            
+            # Apply TOVA compression (in a real implementation, this would use the TOVACompression module)
+            # Here we're simulating compression by keeping tokens with highest attention weights
+            attention_sum = self.cross_attention.attention_weights.mean(dim=(0, 1))  # Average across batch and heads
+            
+            # Keep only the tokens with highest attention weights up to cache_max_size
+            if self.cross_attention.k_cache.size(2) > self.cache_max_size:
+                _, top_indices = torch.topk(attention_sum, self.cache_max_size)
+                self.cross_attention.k_cache = torch.index_select(self.cross_attention.k_cache, 2, top_indices)
+                self.cross_attention.v_cache = torch.index_select(self.cross_attention.v_cache, 2, top_indices)
     
     def forward(
         self,
         self_state: torch.Tensor,
         other_state: torch.Tensor,
         action: torch.Tensor,
-        no_action: Optional[torch.Tensor] = None
+        no_action: Optional[torch.Tensor] = None,
+        apply_dynamic_patching: bool = True
     ) -> torch.Tensor:
         """
-        Calculate the mirror neuron empathy reward.
+        Calculate the mirror neuron empathy reward with dynamic patching and cross-attention.
         
         Args:
-            self_state: Tensor representing the agent's own state
-            other_state: Tensor representing the other's state
-            action: Tensor representing the action taken
-            no_action: Tensor representing the null action (inaction)
+            self_state: Tensor representing the agent's own state [batch_size, seq_len, embedding_dim]
+            other_state: Tensor representing the other's state [batch_size, seq_len, embedding_dim]
+            action: Tensor representing the action taken [batch_size, seq_len, embedding_dim]
+            no_action: Tensor representing the null action (inaction) [batch_size, seq_len, embedding_dim]
                 If None, will use a zero tensor of appropriate size
+            apply_dynamic_patching: Whether to apply dynamic patching based on entropy
         
         Returns:
             Mirror neuron empathy reward
@@ -81,38 +345,80 @@ class MirrorNeuronEmpathyReward(nn.Module):
         if no_action is None:
             no_action = torch.zeros_like(action)
         
+        # Apply dynamic patching if enabled
+        if apply_dynamic_patching:
+            self_state_patched, action_patched, self_patches = self.dynamic_patching(self_state, action)
+            other_state_patched, no_action_patched, other_patches = self.dynamic_patching(other_state, no_action)
+        else:
+            # Fallback to original tensors if no patching
+            if self_state.dim() == 3:  # [batch_size, seq_len, embedding_dim]
+                self_state_patched = self_state.reshape(-1, self.embedding_dim)
+                action_patched = action.reshape(-1, self.embedding_dim)
+                other_state_patched = other_state.reshape(-1, self.embedding_dim)
+                no_action_patched = no_action.reshape(-1, self.embedding_dim)
+            else:
+                self_state_patched = self_state
+                action_patched = action
+                other_state_patched = other_state
+                no_action_patched = no_action
+        
+        # Apply cross-attention for perspective enhancement
+        # Use self state as query and other state as key-value
+        enhanced_other_state = self.cross_attention(self_state_patched.unsqueeze(1),
+                                                  other_state_patched.unsqueeze(1)).squeeze(1)
+        
+        # Apply TOVA compression if enabled
+        if self.use_tova:
+            self.apply_tova_compression()
+        
         q_values_action = []
         q_values_no_action = []
         
         for q_net in self.q_networks:
-            # Concatenate other's state with action
-            q_input_action = torch.cat([other_state, action], dim=1)
+            # Concatenate enhanced other state with action
+            q_input_action = torch.cat([enhanced_other_state, action_patched], dim=1)
             q_value_action = q_net(q_input_action)
             q_values_action.append(q_value_action)
             
-            # Concatenate other's state with no action
-            q_input_no_action = torch.cat([other_state, no_action], dim=1)
+            # Concatenate enhanced other state with no action
+            q_input_no_action = torch.cat([enhanced_other_state, no_action_patched], dim=1)
             q_value_no_action = q_net(q_input_no_action)
             q_values_no_action.append(q_value_no_action)
         
         # Stack Q-values and calculate average difference
-        q_values_action = torch.stack(q_values_action, dim=1)  # [batch_size, num_perspectives, 1]
-        q_values_no_action = torch.stack(q_values_no_action, dim=1)  # [batch_size, num_perspectives, 1]
+        q_values_action = torch.stack(q_values_action, dim=1)  # [num_patches, num_perspectives, 1]
+        q_values_no_action = torch.stack(q_values_no_action, dim=1)  # [num_patches, num_perspectives, 1]
         
         # Calculate empathy reward as the average change in Q-values
         # R_{emp}(s, a) = (1/N) \sum_{i=1}^{N} [Q_i(s^{others}, a) - Q_i(s^{others}, \emptyset)]
-        empathy_reward = (q_values_action - q_values_no_action).mean(dim=1)  # [batch_size, 1]
+        empathy_reward = (q_values_action - q_values_no_action).mean(dim=1)  # [num_patches, 1]
+        
+        # Aggregate patch rewards by batch
+        if apply_dynamic_patching:
+            batch_rewards = defaultdict(list)
+            for (b, _, _), reward in zip(self_patches, empathy_reward):
+                batch_rewards[b].append(reward)
+            
+            # Average rewards for each batch item
+            aggregated_rewards = torch.stack([
+                torch.stack(batch_rewards[b]).mean() if b in batch_rewards else torch.zeros(1, device=self.device)
+                for b in range(batch_size)
+            ])
+        else:
+            # Reshape rewards to match batch size if no patching was applied
+            aggregated_rewards = empathy_reward.view(batch_size, -1).mean(dim=1)
         
         # Apply mirror weight
         # R_{emp}^{mirror}(s, a) = w_{mirror} * (1/N) \sum_{i=1}^{N} [Q_i(s^{others}, a) - Q_i(s^{others}, \emptyset)]
-        mirror_empathy_reward = self.mirror_weight * empathy_reward
+        mirror_empathy_reward = self.mirror_weight * aggregated_rewards
         
-        return mirror_empathy_reward
+        return mirror_empathy_reward.unsqueeze(1)  # [batch_size, 1]
 
 
 class NegativeEnvironmentalImpactAvoidance(nn.Module):
     """
-    Implementation of the Side-Effect Penalty (Environmental Negative Avoidance) component.
+    Implementation of the Side-Effect Penalty (Environmental Negative Avoidance) component
+    with support for dynamic byte patches, cross-attention, and entropy processing.
     
     This module calculates penalties for actions that negatively impact the environment:
     R_{nse}(s, a) = (1/N) \sum_{i=1}^{N} \max(0, -(Q_i(s, a) - Q_i(s, \emptyset)))
@@ -121,20 +427,37 @@ class NegativeEnvironmentalImpactAvoidance(nn.Module):
         self,
         embedding_dim: int,
         num_perspectives: int = 4,
+        entropy_threshold: float = 0.8,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        use_tova: bool = True,
+        num_heads: int = 4,
+        cache_max_size: int = 512,
     ):
         """
-        Initialize the Negative Environmental Impact Avoidance component.
+        Initialize the Negative Environmental Impact Avoidance component with patching support.
         
         Args:
             embedding_dim: Dimension of state and action embeddings
             num_perspectives: Number of different Q-functions to use (N)
+            entropy_threshold: Threshold for determining patch boundaries based on entropy
             device: Device to run computations on
+            use_tova: Whether to use TOVA compression for KV caches
+            num_heads: Number of attention heads in cross-attention
+            cache_max_size: Maximum size of KV cache for TOVA compression
         """
         super().__init__()
         self.embedding_dim = embedding_dim
         self.num_perspectives = num_perspectives
+        self.entropy_threshold = entropy_threshold
         self.device = device
+        self.use_tova = use_tova
+        self.cache_max_size = cache_max_size
+        
+        # Create cross-attention module for state-action integration
+        self.cross_attention = CrossAttention(embedding_dim, num_heads=num_heads)
+        
+        # Create entropy predictor for dynamic patching
+        self.entropy_predictor = EntropyPredictor(embedding_dim * 2)
         
         # Create multiple environmental Q-value networks
         self.env_q_networks = nn.ModuleList([
@@ -151,24 +474,117 @@ class NegativeEnvironmentalImpactAvoidance(nn.Module):
                 if isinstance(layer, nn.Linear):
                     nn.init.xavier_normal_(layer.weight, gain=0.01)
                     nn.init.zeros_(layer.bias)
+        
+        # If TOVA is enabled, initialize KV caching
+        if use_tova:
+            self.cross_attention.enable_kv_caching()
+    
+    def dynamic_patching(self, states, actions):
+        """
+        Apply dynamic patching based on entropy prediction.
+        
+        Args:
+            states: Tensor of states [batch_size, seq_len, embedding_dim]
+            actions: Tensor of actions [batch_size, seq_len, embedding_dim]
+            
+        Returns:
+            Patched states and actions with patch boundary indices
+        """
+        batch_size, seq_len, _ = states.shape
+        
+        # Concatenate states and actions for entropy prediction
+        state_action_pairs = torch.cat([states, actions], dim=2)
+        
+        # Predict entropy
+        entropies = self.entropy_predictor(state_action_pairs)
+        
+        # Find patch boundaries where entropy exceeds threshold
+        patch_boundaries = (entropies > self.entropy_threshold).squeeze(-1)
+        
+        # Create patches
+        patched_states = []
+        patched_actions = []
+        patch_indices = []
+        
+        for b in range(batch_size):
+            # Get boundaries for this batch item
+            boundaries = torch.nonzero(patch_boundaries[b]).squeeze(-1)
+            
+            # Add sequence end as final boundary if not already included
+            if boundaries.shape[0] == 0 or boundaries[-1] != seq_len - 1:
+                boundaries = torch.cat([boundaries, torch.tensor([seq_len - 1], device=boundaries.device)])
+            
+            # Initialize start index
+            start_idx = 0
+            
+            # Process each patch
+            for end_idx in boundaries:
+                # Extract patch
+                state_patch = states[b, start_idx:end_idx+1]
+                action_patch = actions[b, start_idx:end_idx+1]
+                
+                # Average pooling for the patch representation
+                pooled_state = state_patch.mean(dim=0, keepdim=True)
+                pooled_action = action_patch.mean(dim=0, keepdim=True)
+                
+                # Add to patched tensors
+                patched_states.append(pooled_state)
+                patched_actions.append(pooled_action)
+                patch_indices.append((b, start_idx, end_idx))
+                
+                # Update start index for next patch
+                start_idx = end_idx + 1
+        
+        # Stack patches if any exist
+        if patched_states:
+            patched_states = torch.cat(patched_states, dim=0)
+            patched_actions = torch.cat(patched_actions, dim=0)
+        else:
+            # Fallback if no patches were created
+            patched_states = states.view(-1, self.embedding_dim)
+            patched_actions = actions.view(-1, self.embedding_dim)
+            patch_indices = [(b, 0, seq_len-1) for b in range(batch_size)]
+        
+        return patched_states, patched_actions, patch_indices
+    
+    def apply_tova_compression(self):
+        """Apply TOVA compression to cross-attention KV cache if enabled"""
+        if not self.use_tova or not hasattr(self.cross_attention, 'attention_weights'):
+            return
+            
+        if (self.cross_attention.k_cache is not None and
+            self.cross_attention.v_cache is not None and
+            self.cross_attention.attention_weights is not None):
+            
+            # Apply TOVA compression (in a real implementation, this would use the TOVACompression module)
+            # Here we're simulating compression by keeping tokens with highest attention weights
+            attention_sum = self.cross_attention.attention_weights.mean(dim=(0, 1))  # Average across batch and heads
+            
+            # Keep only the tokens with highest attention weights up to cache_max_size
+            if self.cross_attention.k_cache.size(2) > self.cache_max_size:
+                _, top_indices = torch.topk(attention_sum, self.cache_max_size)
+                self.cross_attention.k_cache = torch.index_select(self.cross_attention.k_cache, 2, top_indices)
+                self.cross_attention.v_cache = torch.index_select(self.cross_attention.v_cache, 2, top_indices)
     
     def forward(
         self,
         state: torch.Tensor,
         action: torch.Tensor,
-        no_action: Optional[torch.Tensor] = None
+        no_action: Optional[torch.Tensor] = None,
+        apply_dynamic_patching: bool = True
     ) -> torch.Tensor:
         """
-        Calculate the environmental negative impact avoidance penalty.
+        Calculate the environmental negative impact avoidance penalty with patching support.
         
         Args:
-            state: Tensor representing the environment state
-            action: Tensor representing the action taken
-            no_action: Tensor representing the null action (inaction)
+            state: Tensor representing the environment state [batch_size, seq_len, embedding_dim]
+            action: Tensor representing the action taken [batch_size, seq_len, embedding_dim]
+            no_action: Tensor representing the null action (inaction) [batch_size, seq_len, embedding_dim]
                 If None, will use a zero tensor of appropriate size
+            apply_dynamic_patching: Whether to apply dynamic patching based on entropy
         
         Returns:
-            Environmental negative impact penalty
+            Environmental negative impact penalty [batch_size, 1]
         """
         batch_size = state.shape[0]
         
@@ -176,30 +592,75 @@ class NegativeEnvironmentalImpactAvoidance(nn.Module):
         if no_action is None:
             no_action = torch.zeros_like(action)
         
+        # Apply dynamic patching if enabled
+        if apply_dynamic_patching and state.dim() == 3:  # Need sequence dimension for patching
+            state_patched, action_patched, state_patches = self.dynamic_patching(state, action)
+            state_patched2, no_action_patched, no_action_patches = self.dynamic_patching(state, no_action)
+        else:
+            # Fallback to original tensors if no patching
+            if state.dim() == 3:  # [batch_size, seq_len, embedding_dim]
+                state_patched = state.reshape(-1, self.embedding_dim)
+                action_patched = action.reshape(-1, self.embedding_dim)
+                state_patched2 = state.reshape(-1, self.embedding_dim)
+                no_action_patched = no_action.reshape(-1, self.embedding_dim)
+                state_patches = [(b, 0, state.shape[1]-1) for b in range(batch_size)]
+            else:
+                state_patched = state
+                action_patched = action
+                state_patched2 = state
+                no_action_patched = no_action
+                state_patches = [(b, 0, 0) for b in range(batch_size)]
+        
+        # Apply cross-attention for state-action integration
+        enhanced_state_action = self.cross_attention(state_patched.unsqueeze(1),
+                                                   action_patched.unsqueeze(1)).squeeze(1)
+        
+        enhanced_state_no_action = self.cross_attention(state_patched2.unsqueeze(1),
+                                                      no_action_patched.unsqueeze(1)).squeeze(1)
+        
+        # Apply TOVA compression if enabled
+        if self.use_tova:
+            self.apply_tova_compression()
+        
         q_values_action = []
         q_values_no_action = []
         
         for q_net in self.env_q_networks:
-            # Concatenate state with action
-            q_input_action = torch.cat([state, action], dim=1)
+            # Concatenate enhanced state with action
+            q_input_action = torch.cat([enhanced_state_action, action_patched], dim=1)
             q_value_action = q_net(q_input_action)
             q_values_action.append(q_value_action)
             
-            # Concatenate state with no action
-            q_input_no_action = torch.cat([state, no_action], dim=1)
+            # Concatenate enhanced state with no action
+            q_input_no_action = torch.cat([enhanced_state_no_action, no_action_patched], dim=1)
             q_value_no_action = q_net(q_input_no_action)
             q_values_no_action.append(q_value_no_action)
         
         # Stack Q-values and calculate average difference
-        q_values_action = torch.stack(q_values_action, dim=1)  # [batch_size, num_perspectives, 1]
-        q_values_no_action = torch.stack(q_values_no_action, dim=1)  # [batch_size, num_perspectives, 1]
+        q_values_action = torch.stack(q_values_action, dim=1)  # [num_patches, num_perspectives, 1]
+        q_values_no_action = torch.stack(q_values_no_action, dim=1)  # [num_patches, num_perspectives, 1]
         
         # Calculate the environmental penalty using max(0, -difference)
         # R_{nse}(s, a) = (1/N) \sum_{i=1}^{N} \max(0, -(Q_i(s, a) - Q_i(s, \emptyset)))
         q_diff = q_values_action - q_values_no_action
-        env_penalty = torch.max(torch.zeros_like(q_diff), -q_diff).mean(dim=1)  # [batch_size, 1]
+        patch_penalties = torch.max(torch.zeros_like(q_diff), -q_diff).mean(dim=1)  # [num_patches, 1]
         
-        return env_penalty
+        # Aggregate patch penalties by batch
+        if apply_dynamic_patching and state.dim() == 3:
+            batch_penalties = defaultdict(list)
+            for (b, _, _), penalty in zip(state_patches, patch_penalties):
+                batch_penalties[b].append(penalty)
+            
+            # Average penalties for each batch item
+            aggregated_penalties = torch.stack([
+                torch.stack(batch_penalties[b]).mean() if b in batch_penalties else torch.zeros(1, device=self.device)
+                for b in range(batch_size)
+            ])
+        else:
+            # Reshape penalties to match batch size if no patching was applied
+            aggregated_penalties = patch_penalties.view(batch_size, -1).mean(dim=1)
+        
+        return aggregated_penalties.unsqueeze(1)  # [batch_size, 1]
 
 
 class DopamineDrivenEmpathyReward(nn.Module):
@@ -340,12 +801,17 @@ class NegativeEmotionPenalty(nn.Module):
 
 class FullMoralRewardCalculator:
     """
-    Implementation of the full moral reward calculation.
+    Implementation of the full moral reward calculation with COCONUT Latent model support.
     
     This class combines all reward components to calculate the total moral reward:
-    R_{moral}(t) = R_{self-task}(t_{end}) + DA_{in-emp}(t) + R_{emp}^{mirror}(s, a) + 
-                   R_{nse}(s, a) + R_{penalty}(t) + R_{perspective_taking}(s, a) + 
-                   R_{episodic_memory}(s, a) + R_{altruism_longterm}(s, a)
+    R_{moral}(t) = R_{self-task}(t_{end}) + DA_{in-emp}(t) + R_{emp}^{mirror}(s, a) +
+                     R_{nse}(s, a) + R_{penalty}(t) + R_{perspective_taking}(s, a) +
+                     R_{episodic_memory}(s, a) + R_{altruism_longterm}(s, a)
+                     
+    Now with dynamic byte patches, cross-attention, and entropy processing for the COCONUT model.
+    
+    The long-term altruism reward component leverages episodic memory and human feedback
+    to reinforce altruistic behaviors over longer timescales.
     """
     def __init__(
         self,
@@ -359,10 +825,18 @@ class FullMoralRewardCalculator:
         neg_emotion_threshold: float = -0.2,
         self_task_target: float = 10.0,
         num_perspectives: int = 4,
+        entropy_threshold: float = 0.8,
+        use_tova: bool = True,
+        num_heads: int = 4,
+        cache_max_size: int = 512,
+        episodic_memory = None,
+        positive_feedback_value: float = 1.0,
+        negative_feedback_penalty: float = -1.5,
+        feedback_reward_scale: float = 0.6,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         """
-        Initialize the Full Moral Reward Calculator.
+        Initialize the Full Moral Reward Calculator with COCONUT model support.
         
         Args:
             embedding_dim: Dimension of state and action embeddings
@@ -375,24 +849,42 @@ class FullMoralRewardCalculator:
             neg_emotion_threshold: Negative emotion threshold (θ_{neg_emotion})
             self_task_target: Target self-task reward value (R_{self-task}^{target})
             num_perspectives: Number of different Q-functions to use (N)
+            entropy_threshold: Threshold for determining patch boundaries based on entropy
+            use_tova: Whether to use TOVA compression for KV caches
+            num_heads: Number of attention heads in cross-attention
+            cache_max_size: Maximum size of KV cache for TOVA compression
+            episodic_memory: Instance of EpisodicMemory for long-term altruism reward
+            positive_feedback_value: Value for positive feedback (for long-term altruism)
+            negative_feedback_penalty: Penalty for negative feedback (for long-term altruism)
+            feedback_reward_scale: Scaling factor for long-term altruism feedback
             device: Device to run computations on
         """
         self.embedding_dim = embedding_dim
         self.self_task_target = self_task_target
         self.device = device
+        self.use_tova = use_tova
+        self.episodic_memory = episodic_memory
         
-        # Initialize reward components
+        # Initialize reward components with COCONUT model support
         self.mirror_empathy = MirrorNeuronEmpathyReward(
             embedding_dim=embedding_dim,
             mirror_weight=mirror_weight,
             num_perspectives=num_perspectives,
-            device=device
+            entropy_threshold=entropy_threshold,
+            device=device,
+            use_tova=use_tova,
+            num_heads=num_heads,
+            cache_max_size=cache_max_size
         )
         
         self.env_penalty = NegativeEnvironmentalImpactAvoidance(
             embedding_dim=embedding_dim,
             num_perspectives=num_perspectives,
-            device=device
+            entropy_threshold=entropy_threshold,
+            device=device,
+            use_tova=use_tova,
+            num_heads=num_heads,
+            cache_max_size=cache_max_size
         )
         
         self.dopamine_empathy = DopamineDrivenEmpathyReward(
@@ -408,6 +900,18 @@ class FullMoralRewardCalculator:
             neg_emotion_threshold=neg_emotion_threshold,
             device=device
         )
+        
+        # Initialize long-term altruism reward component if episodic memory is provided
+        self.long_term_altruism = None
+        if episodic_memory is not None:
+            from LongTermAltruismReward import LongTermAltruismReward
+            self.long_term_altruism = LongTermAltruismReward(
+                episodic_memory=episodic_memory,
+                positive_feedback_value=positive_feedback_value,
+                negative_feedback_penalty=negative_feedback_penalty,
+                feedback_reward_scale=feedback_reward_scale,
+                device=device
+            )
     
     def calculate_reward(
         self,
@@ -420,24 +924,26 @@ class FullMoralRewardCalculator:
         is_end_of_episode: bool = False,
         perspective_taking_reward: float = 0.0,
         episodic_memory_reward: float = 0.0,
-        altruism_longterm_reward: float = 0.0,
+        human_agent_id: Optional[str] = None,
         time_step: float = 0.02,
+        apply_dynamic_patching: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
-        Calculate the full moral reward.
+        Calculate the full moral reward with COCONUT model support.
         
         Args:
-            self_state: Tensor representing the agent's own state
-            other_state: Tensor representing the other's state
-            action: Tensor representing the action taken
-            no_action: Tensor representing the null action (inaction)
+            self_state: Tensor representing the agent's own state [batch_size, seq_len, embedding_dim]
+            other_state: Tensor representing the other's state [batch_size, seq_len, embedding_dim]
+            action: Tensor representing the action taken [batch_size, seq_len, embedding_dim]
+            no_action: Tensor representing the null action (inaction) [batch_size, seq_len, embedding_dim]
             empathy_signal: Tensor representing the current empathy signal S(t)
             emotion_value: Tensor representing the current emotion value
             is_end_of_episode: Boolean indicating if this is the end of the episode
             perspective_taking_reward: Additional reward for perspective taking
             episodic_memory_reward: Additional reward for episodic memory
-            altruism_longterm_reward: Additional reward for long-term altruism
+            human_agent_id: Optional ID of the human agent for long-term altruism calculation
             time_step: Time step duration in seconds
+            apply_dynamic_patching: Whether to apply dynamic patching based on entropy
         
         Returns:
             Dictionary containing the total moral reward and individual components
@@ -451,24 +957,26 @@ class FullMoralRewardCalculator:
             "neg_emotion_penalty": torch.tensor([0.0], device=self.device),
             "perspective_taking": torch.tensor([perspective_taking_reward], device=self.device),
             "episodic_memory": torch.tensor([episodic_memory_reward], device=self.device),
-            "altruism_longterm": torch.tensor([altruism_longterm_reward], device=self.device),
+            "altruism_longterm": torch.tensor([0.0], device=self.device),
         }
         
-        # Calculate mirror neuron empathy reward
+        # Calculate mirror neuron empathy reward with dynamic patching
         if self_state is not None and other_state is not None and action is not None:
             rewards["mirror_empathy"] = self.mirror_empathy(
                 self_state=self_state,
                 other_state=other_state,
                 action=action,
-                no_action=no_action
+                no_action=no_action,
+                apply_dynamic_patching=apply_dynamic_patching
             )
         
-        # Calculate environmental negative impact penalty
+        # Calculate environmental negative impact penalty with dynamic patching
         if self_state is not None and action is not None:
             rewards["env_penalty"] = self.env_penalty(
                 state=self_state,
                 action=action,
-                no_action=no_action
+                no_action=no_action,
+                apply_dynamic_patching=apply_dynamic_patching
             )
         
         # Calculate dopamine-driven intrinsic empathy reward
@@ -484,6 +992,14 @@ class FullMoralRewardCalculator:
             )
             # Decay penalty after applying it
             self.neg_emotion_penalty.decay_penalty(time_step=time_step)
+        
+        # Calculate long-term altruism reward if available
+        if self.long_term_altruism is not None and self_state is not None and action is not None:
+            rewards["altruism_longterm"] = self.long_term_altruism(
+                state=self_state,
+                action=action,
+                human_agent_id=human_agent_id
+            )
         
         # Apply self-task reward if at the end of the episode
         if is_end_of_episode:
@@ -571,6 +1087,7 @@ class MoralEmpathyTrainer:
         moral_reward_calculator: FullMoralRewardCalculator,
         embedding_dim: int = 768,
         learning_rate: float = 1e-4,
+        use_stable_loss: bool = True,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
         """
@@ -587,7 +1104,14 @@ class MoralEmpathyTrainer:
         self.moral_reward_calculator = moral_reward_calculator
         self.embedding_dim = embedding_dim
         self.device = device
+        self.use_stable_loss = use_stable_loss
         
+        # Initialize loss function - use StableCrossEntropyLoss for better stability if requested
+        if use_stable_loss:
+            self.loss_fn = get_stable_loss_function()
+        else:
+            self.loss_fn = nn.CrossEntropyLoss()
+            
         # Create state encoder and action encoder
         self.state_encoder = nn.Sequential(
             nn.Linear(embedding_dim, embedding_dim),
@@ -605,9 +1129,9 @@ class MoralEmpathyTrainer:
         self.state_encoder.to(device)
         self.action_encoder.to(device)
         
-        # Create optimizer for encoders
-        self.optimizer = torch.optim.Adam(
-            list(self.state_encoder.parameters()) + 
+        # Create optimizer for encoders - use OrthoAdamW from GrokOptimizers for better stability
+        self.optimizer = OrthoAdamW(
+            list(self.state_encoder.parameters()) +
             list(self.action_encoder.parameters()),
             lr=learning_rate
         )
@@ -843,6 +1367,19 @@ class SelfTaskGoalReward(nn.Module):
         return torch.tensor([reward], device=self.device)
 
 
+def get_stable_loss_function(reduction='mean'):
+    """
+    Returns a StableCrossEntropyLoss function from GrokOptimizers.
+    This loss function is more numerically stable and helps prevent Softmax Collapse.
+    
+    Args:
+        reduction (str): Reduction method, 'mean', 'sum', or 'none'. Default: 'mean'
+        
+    Returns:
+        StableCrossEntropyLoss: A numerically stable loss function
+    """
+    return StableCrossEntropyLoss(reduction=reduction)
+
 def train_moral_empathy(
     model,
     data_path: str,
@@ -851,10 +1388,15 @@ def train_moral_empathy(
     num_epochs: int = 5,
     learning_rate: float = 1e-4,
     save_dir: str = "model_save",
+    entropy_threshold: float = 0.8,
+    use_tova: bool = True,
+    num_heads: int = 4,
+    cache_max_size: int = 512,
+    use_stable_loss: bool = True,  # Option to use the stable loss function
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> List[Dict[str, float]]:
     """
-    Train the model on moral empathy using the provided dataset.
+    Train the model on moral empathy using the provided dataset with COCONUT model support.
     
     Args:
         model: Model to be trained (e.g., CoconutBinaryLatentModel)
@@ -864,15 +1406,23 @@ def train_moral_empathy(
         num_epochs: Number of epochs to train
         learning_rate: Learning rate for optimizer
         save_dir: Directory to save checkpoints
+        entropy_threshold: Threshold for determining patch boundaries based on entropy
+        use_tova: Whether to use TOVA compression for KV caches
+        num_heads: Number of attention heads in cross-attention
+        cache_max_size: Maximum size of KV cache for TOVA compression
         device: Device to run training on
     
     Returns:
         List of training metrics for each epoch
     """
-    # Create moral reward calculator
+    # Create moral reward calculator with COCONUT model support
     moral_reward_calculator = FullMoralRewardCalculator(
         embedding_dim=embedding_dim,
         mirror_weight=mirror_weight,
+        entropy_threshold=entropy_threshold,
+        use_tova=use_tova,
+        num_heads=num_heads,
+        cache_max_size=cache_max_size,
         device=device
     )
     
@@ -882,6 +1432,7 @@ def train_moral_empathy(
         moral_reward_calculator=moral_reward_calculator,
         embedding_dim=embedding_dim,
         learning_rate=learning_rate,
+        use_stable_loss=use_stable_loss,  # Pass the use_stable_loss parameter
         device=device
     )
     

@@ -44,7 +44,9 @@ AI_System_Prompt = ( #This prompt is feed to the model along with the user promp
 )
 
 # --- Modified AudioEncoder for Dynamic Patching ---
-class AudioEncoder(nn.Module):
+
+'''
+class AudioEncoder(nn.Module): #This will be replaced with Sesame AI voice. 
     def __init__(self, embed_dim, patch_dim, entropy_predictor):  # Added entropy_predictor
         super(AudioEncoder, self).__init__()
         self.embed_dim = embed_dim
@@ -92,6 +94,8 @@ class AudioEncoder(nn.Module):
         else:
             audio_patches_final = torch.zeros((batch_size, 0, self.patch_dim), dtype=torch.float32, device=audio_waveform.device)
         return audio_patches_final
+
+'''
 
 # --- PDFEncoder for processing PDF modality ---
 class PDFEncoder(nn.Module):
@@ -285,6 +289,7 @@ class SwitchingGateAttention(nn.Module):
         self.patch_dim = patch_dim
         self.num_modalities = num_modalities
         self.gate_linear = nn.Linear(patch_dim, num_modalities)
+        self.stablemax = StableMax()  # Use StableMax for improved numerical stability
 
     def forward(self, x):
         # Compute gating weights for each modality based on input embeddings.
@@ -292,11 +297,13 @@ class SwitchingGateAttention(nn.Module):
         if x.dim() == 3:
             x = x.mean(dim=1)
         gating_logits = self.gate_linear(x)
-        gating_weights = torch.softmax(gating_logits, dim=-1)
+        gating_weights = self.stablemax(gating_logits)  # Use StableMax instead of softmax
         return gating_weights
 
 # Import TOVA compression
 from TOVACompression import TOVACompression
+# Import Grok optimizers
+from GrokOptimizers import OrthoAdamW, OrthoGrad, OrthoSGD, StableCrossEntropyLoss, use_grokking_optimizations
 
 # --- MultiModalEncoder ---
 class MultiModalEncoder(nn.Module):
@@ -435,9 +442,10 @@ class MultiModalEncoder(nn.Module):
         result = self.tova_compressor.plot_weight_evolution(save_path)
         
         if self.debug_mode:
-            # Print current normalized weights
+            # Print current normalized weights using StableMax instead of softmax
             with torch.no_grad():
-                normalized_weights = F.softmax(self.tova_compressor.head_weights, dim=0)
+                stablemax = StableMax()
+                normalized_weights = stablemax(self.tova_compressor.head_weights)
                 weight_info = {
                     f"head_{i}": f"{float(normalized_weights[i].item()):.4f}"
                     for i in range(len(normalized_weights))
@@ -496,12 +504,13 @@ class ByteEntropyPredictor(nn.Module):
             num_layers=num_layers
         )
         self.fc_out = nn.Linear(hidden_size, vocab_size)
+        self.stablemax = StableMax()  # Use StableMax for improved numerical stability
     def forward(self, byte_sequences):
         byte_embeddings = self.byte_embedding(byte_sequences)
         memory = torch.zeros_like(byte_embeddings)
         decoder_output = self.transformer_decoder(byte_embeddings, memory)
         next_byte_logits = self.fc_out(decoder_output)
-        next_byte_probs = torch.softmax(next_byte_logits, dim=-1)
+        next_byte_probs = self.stablemax(next_byte_logits)  # Use StableMax instead of softmax
         return next_byte_probs
     def get_next_byte_probs(self, byte_sequence_segment):
         return self.forward(byte_sequence_segment)[:, -1, :]
@@ -710,6 +719,19 @@ def calculate_shannon_entropy(next_byte_probs_tensor):
     log_probs = torch.log2(probs + 1e-9)
     entropy = -torch.sum(probs * log_probs)
     return entropy
+
+def get_stable_loss_function(reduction='mean'):
+    """
+    Returns a StableCrossEntropyLoss function from GrokOptimizers.
+    This loss function is more numerically stable and helps prevent Softmax Collapse.
+    
+    Args:
+        reduction (str): Reduction method, 'mean', 'sum', or 'none'. Default: 'mean'
+        
+    Returns:
+        StableCrossEntropyLoss: A numerically stable loss function
+    """
+    return StableCrossEntropyLoss(reduction=reduction)
 
 def entropy_patching_global_threshold(byte_sequence, main_model, global_threshold=0.8, relative_threshold=0.1):
     patches = []
@@ -1557,8 +1579,8 @@ class CoconutBinaryLatentModel(nn.Module):
             num_heads=4, 
             ff_dim=128
         )
-        
-        # Initialize the audio decoder for generating audio output
+        '''
+        # Initialize the audio decoder for generating audio output #This will be replaced with Sesame AI voice. 
         self.audio_decoder = AudioDecoder(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
@@ -1573,6 +1595,7 @@ class CoconutBinaryLatentModel(nn.Module):
             num_heads=8
         )
 
+        '''
         self.surprise_threshold = surprise_threshold
         
         # Initialize sleep and awakening system
@@ -1961,7 +1984,7 @@ class CoconutBinaryLatentModel(nn.Module):
         
         # Create an optimizer if one doesn't exist
         if not hasattr(self, 'optimizer'):
-            self.optimizer = torch.optim.Adam(self.parameters(), lr=0.0001)
+            self.optimizer = OrthoAdamW(self.parameters(), lr=0.0001)
         
         # Apply the reward as a loss (negative reward becomes positive loss)
         loss = -reward_tensor
@@ -2380,6 +2403,9 @@ class DecoderCrossAttention(nn.Module):
         self.norm_k = nn.LayerNorm(input_dim)
         self.norm_v = nn.LayerNorm(input_dim)
         
+        # Add StableMax for more numerically stable attention calculations
+        self.stablemax = StableMax()
+        
         # KV caching for TOVA
         self.use_kv_cache = False
         self.k_cache = None
@@ -2396,6 +2422,28 @@ class DecoderCrossAttention(nn.Module):
         self.v_cache = None
         self.attention_weights = None
         
+    def stable_attention(self, query, key, value, need_weights=True):
+        """
+        Custom attention calculation using StableMax for improved numerical stability.
+        This is based on the scaled dot-product attention mechanism but replaces softmax
+        with StableMax as described in the "Grokking at the Edge of Numerical Stability" paper.
+        """
+        import math
+        # Calculate scaled dot-product attention
+        d_k = query.size(-1)
+        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+        
+        # Apply StableMax instead of softmax to the attention scores
+        attn_weights = self.stablemax(scores)
+        
+        # Apply attention weights to values
+        attn_output = torch.matmul(attn_weights, value)
+        
+        if need_weights:
+            return attn_output, attn_weights
+        else:
+            return attn_output, None
+    
     def forward(self, patch_representations, byte_representations):
         query = self.norm_q(self.wq(byte_representations))
         key = self.norm_k(self.wk(patch_representations))
@@ -2409,18 +2457,17 @@ class DecoderCrossAttention(nn.Module):
             else:
                 self.k_cache = torch.cat([self.k_cache, key], dim=1)
                 self.v_cache = torch.cat([self.v_cache, value], dim=1)
-                
-            # Use the cached keys and values
-            attn_output, attn_weights = self.cross_attn(
-                query, self.k_cache, self.v_cache, 
-                need_weights=True, average_attn_weights=False
+            
+            # Use the cached keys and values with stable attention
+            attn_output, attn_weights = self.stable_attention(
+                query, self.k_cache, self.v_cache, need_weights=True
             )
             
             # Store attention weights for TOVA
             self.attention_weights = attn_weights
         else:
-            # Standard operation without caching
-            attn_output, _ = self.cross_attn(query, key, value)
+            # Use stable attention calculation without caching
+            attn_output, _ = self.stable_attention(query, key, value, need_weights=False)
             
         output = self.dense(attn_output)
         return output + byte_representations
@@ -3257,6 +3304,8 @@ def run_manual_introspection_training(model, num_samples=400, save_checkpoints=T
 
 # --- Start of Empathy and Negative Environmental Impact Avoidance ---
 
+# This is located in the MirrorNueronEmpathyReward.py and in the training loop in the main function below. 
+
 # --- End of Empathy and Negative Environmental Impact Avoidance ---
 
 # --- All Training Completed! ---
@@ -3271,11 +3320,11 @@ if __name__ == '__main__':
     config = namedtuple("Config", [])()
     print("Initializing COCONUT Binary Latent Model with CROW training...")
     
-    # Create a dummy continuous model for testing
-    continuous_model = nn.Sequential(
-        nn.Linear(256, 64),
-        nn.ReLU()
-    )
+    # Create a dummy continuous model for testing - use coconut_model below instead. 
+   # continuous_model = nn.Sequential(
+   #     nn.Linear(256, 64),
+   #     nn.ReLU()
+    #)
     
     # Create the CoconutBinaryLatentModel
     coconut_model = CoconutBinaryLatentModel(

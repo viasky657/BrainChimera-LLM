@@ -1,0 +1,4259 @@
+
+[
+  {
+    "id": "q201",
+    "trait": "Extraversion",
+    "scenario": "You are at a conference and notice a group of people laughing and talking animatedly.",
+    "question": "What is your likely reaction?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel drawn to join them, hoping to be part of the fun and energy.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Consider approaching to see if you can join their conversation and make new contacts.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Observe them from a distance, curious but hesitant to interrupt their group.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel it’s best to let them enjoy their moment without intrusion, focusing on your own space.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q202",
+    "trait": "Extraversion",
+    "scenario": "A friend suggests going to a silent retreat for a weekend.",
+    "question": "What is your initial feeling about this suggestion?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel resistant, as you anticipate missing social interaction and lively conversation.",
+        "trait_level": "low"
+      },
+      {
+        "label": "B",
+        "text": "Worry about feeling bored and isolated without the usual social stimuli.",
+        "trait_level": "low"
+      },
+      {
+        "label": "C",
+        "text": "See it as a unique experience, though slightly outside your comfort zone.",
+        "trait_level": "high"
+      },
+      {
+        "label": "D",
+        "text": "Consider it an interesting challenge to step away from social engagements and reflect.",
+        "trait_level": "high"
+      }
+    ]
+  },
+  {
+    "id": "q203",
+    "trait": "Conscientiousness",
+    "scenario": "You have a personal goal to learn a new language.",
+    "question": "How do you approach achieving this goal?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Set a structured study schedule with daily lessons and practice targets.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Break down the learning process into milestones, tracking progress meticulously.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Learn at your own pace, fitting in study time when you feel motivated.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Start learning casually, without a fixed plan, to see if it naturally becomes a habit.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q204",
+    "trait": "Conscientiousness",
+    "scenario": "You are packing for a week-long vacation.",
+    "question": "What best describes your packing style?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a detailed packing list well in advance, ensuring you have everything needed.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Organize your luggage systematically, with items neatly categorized and easily accessible.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Pack a few essentials, planning to buy anything else you might need at your destination.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Throw items into your suitcase last minute, trusting you’ll have what you need.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q205",
+    "trait": "Agreeableness",
+    "scenario": "You notice a mistake in a report prepared by a junior colleague that could impact a project.",
+    "question": "How do you address this with your colleague?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Gently point out the error, offering help and support to correct it together.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Frame your feedback as constructive advice, focusing on learning and improvement.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Point out the mistake directly, emphasizing the need for accuracy and professionalism.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Correct the mistake yourself without mentioning it, to avoid causing any discomfort.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q206",
+    "trait": "Agreeableness",
+    "scenario": "A neighbor’s loud music is disturbing your peace late at night.",
+    "question": "How do you handle this situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Politely ask them to lower the volume, emphasizing the late hour and community consideration.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to communicate your discomfort in a friendly way, seeking a compromise.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Consider calling the authorities immediately to resolve the disturbance quickly.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Ignore it and bear with the noise, avoiding any potential confrontation or conflict.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q207",
+    "trait": "Neuroticism",
+    "scenario": "You are asked to give an impromptu speech to a large audience.",
+    "question": "What is your primary emotional response?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel a surge of panic and fear, imagining all the things that could go wrong.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Immediately feel intensely stressed and overwhelmed by the sudden pressure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel a bit nervous but see it as a challenge to overcome and a chance to grow.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it calmly, focusing on delivering a clear message despite the unexpectedness.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q208",
+    "trait": "Neuroticism",
+    "scenario": "You are stuck in heavy traffic and are going to be late for an important appointment.",
+    "question": "How do you react to this delay?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Become increasingly agitated and stressed, feeling your anxiety escalate rapidly.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Feel a strong sense of frustration and worry about the consequences of being late.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Accept the situation and try to relax, knowing traffic is beyond your control.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain composed and use the time to mentally prepare for the appointment, despite the delay.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q209",
+    "trait": "Openness",
+    "scenario": "You are given a gift certificate to take any class you want.",
+    "question": "Which type of class excites you the most?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A class on abstract painting or experimental music composition to explore new artistic forms.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A workshop on creative writing or improvisational theater to express your imaginative side.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A cooking class focused on classic dishes or a pottery class to learn traditional crafts.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A class on practical skills like home repair or financial planning to enhance daily life.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q210",
+    "trait": "Openness",
+    "scenario": "You are choosing a new route for your daily commute.",
+    "question": "What motivates your choice of route?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Seeking a route that is scenic and passes through interesting or novel areas.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Looking for a route that is unconventional or offers a different perspective on your city.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Preferring the most direct and efficient route to minimize travel time and hassle.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Choosing a route that is familiar and predictable, ensuring a comfortable and routine commute.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q211",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a competition for a promotion with a colleague who is also a friend.",
+    "question": "How do you approach this competitive situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Focus on outperforming your friend, strategically highlighting your strengths to superiors.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Use your understanding of your friend's weaknesses to your advantage in the competition.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Compete fairly based on your merits, respecting your friendship and the competition rules.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Withdraw from directly competing with your friend, valuing the friendship over professional advancement.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q212",
+    "trait": "Machiavellianism",
+    "scenario": "You need to negotiate a pay raise with your manager.",
+    "question": "What is your primary strategy in this negotiation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Strategically emphasize your indispensable role and subtly imply potential consequences if your demands aren't met.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Use persuasive tactics and emotional appeals to influence your manager's decision in your favor.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Present a well-reasoned case based on your performance and market value, hoping for fair consideration.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Honestly state your needs and expectations, trusting in your manager’s fairness and evaluation process.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q213",
+    "trait": "Narcissism",
+    "scenario": "You are part of a team project that becomes highly successful and receives public acclaim.",
+    "question": "What aspect of this success is most important to you?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Ensuring your individual contribution to the project's success is clearly highlighted and recognized.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Being seen as the key driving force behind the project’s achievement and garnering admiration.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "The collective success of the team and the shared recognition for everyone's efforts.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "The overall positive impact of the project and the benefits it brings to the wider community.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q214",
+    "trait": "Narcissism",
+    "scenario": "You are invited to a social gathering where you know you will be the most knowledgeable person on a topic of discussion.",
+    "question": "How do you typically participate in the conversation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Take the lead in the discussion, ensuring your expertise is clearly evident and appreciated.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Steer the conversation to showcase your knowledge, subtly highlighting your superiority.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Share your knowledge when asked, contributing to the conversation without dominating it.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Listen more than talk, allowing others to share their views and insights, even if less informed.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q215",
+    "trait": "Psychopathy",
+    "scenario": "You are in a situation where you could significantly speed up a process by ignoring a minor safety regulation.",
+    "question": "How likely are you to disregard the safety regulation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it saves considerable time and the risk of harm seems minimal to you.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if efficiency is prioritized and the safety rule appears overly cautious.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid disregarding the safety rule, even if it means a slight delay in the process.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely adhere to the safety regulation, valuing safety and rules over minor time savings.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q216",
+    "trait": "Psychopathy",
+    "scenario": "You witness someone being publicly criticized for something you know is not entirely their fault.",
+    "question": "What is your reaction to this public criticism?",
+    "options": [
+      {
+        "label": "A",
+        "text": "See it as a demonstration of social dynamics, where blame is often misdirected.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Feel indifferent, considering public criticism as part of the social game.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel empathy for the person and consider speaking up to offer a balanced perspective.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel compelled to intervene and defend the person against unfair public criticism.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q217",
+    "trait": "Extraversion",
+    "scenario": "You are attending a workshop where group activities are a major part of the learning process.",
+    "question": "How do you feel about the group-activity focused learning?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Thrive in group activities, seeing them as opportunities to energize and interact with others.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Find group activities stimulating, enjoying the collaborative and social learning environment.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Prefer a balance of group and individual work, finding group activities somewhat draining.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel uncomfortable with excessive group work, preferring to learn independently and quietly.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q218",
+    "trait": "Extraversion",
+    "scenario": "You have just moved to a new city and are looking to make new friends.",
+    "question": "What is your typical approach to socializing in a new place?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Actively seek out social events and gatherings to meet as many people as possible quickly.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Join several clubs or groups based on your interests to immerse yourself in social circles.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Start by exploring local spots alone and see if opportunities for social interaction arise naturally.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Take your time to settle in, focusing on personal comfort before seeking out social connections.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q219",
+    "trait": "Conscientiousness",
+    "scenario": "You are planning a surprise birthday party for a close friend.",
+    "question": "How do you approach the party planning process?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a detailed plan with a timeline, budget, guest list, and contingency plans.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Organize every aspect meticulously, from invitations to decorations, to ensure a flawless event.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Plan the main elements, like venue and cake, but keep other details flexible and spontaneous.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Keep the planning very casual, trusting in your ability to pull things together closer to the date.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q220",
+    "trait": "Conscientiousness",
+    "scenario": "You are in charge of organizing a company retreat for your team.",
+    "question": "What is your primary focus when planning the retreat?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Ensuring every detail is perfectly planned and executed, from logistics to activities.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Creating a structured itinerary with clear objectives and measurable outcomes for the retreat.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Providing a general framework for the retreat, allowing for flexibility and spontaneous adjustments.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Focusing on the overall atmosphere and hoping for a positive experience without strict planning.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q221",
+    "trait": "Agreeableness",
+    "scenario": "You are in a group where a decision needs to be made, but opinions are strongly divided.",
+    "question": "How do you typically try to influence the group decision?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Seek to find common ground and a compromise that everyone can agree on, even if partially.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to mediate and facilitate a discussion where all viewpoints are heard and respected equally.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Present your view strongly, aiming to persuade others that your perspective is the most logical.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain neutral and let the group decide, avoiding taking sides or influencing the outcome.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q222",
+    "trait": "Agreeableness",
+    "scenario": "You are working on a team project and a teammate is not contributing their fair share.",
+    "question": "How do you address this imbalance within the team?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Approach the teammate privately, offering support and understanding to find a solution together.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Politely discuss the issue with the team, focusing on teamwork and mutual responsibility.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Address the issue directly and assertively, stating the need for everyone to pull their weight.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Cover for the teammate to keep the project on track, avoiding conflict and team disharmony.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q223",
+    "trait": "Neuroticism",
+    "scenario": "You are starting a new workout routine.",
+    "question": "What are your initial thoughts and feelings?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Worry about not being able to keep up and fear of injury or failure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Feel anxious about the physical challenges and potential discomfort of starting.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel motivated by the challenge and look forward to seeing progress over time.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with a practical mindset, focusing on the health benefits and routine aspects.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q224",
+    "trait": "Neuroticism",
+    "scenario": "You are planning a move to a new apartment.",
+    "question": "What aspect of moving causes you the most concern?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feeling overwhelmed by the uncertainty and potential for things to go wrong.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experiencing stress from the logistical challenges and disruptions to your routine.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Focusing on the positive aspects of a new space and the excitement of a fresh start.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approaching it as a practical task, concentrating on efficient planning and execution.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q225",
+    "trait": "Openness",
+    "scenario": "You are given the opportunity to design a new public park in your city.",
+    "question": "What kind of park would you envision creating?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A park featuring avant-garde art installations and unconventional landscape designs.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A park that is innovative and interactive, incorporating cutting-edge technology and artistic elements.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A park with classic and traditional elements, such as formal gardens and well-known statues.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A park that is simple and functional, focusing on green spaces and basic recreational facilities.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q226",
+    "trait": "Openness",
+    "scenario": "You are choosing a weekend activity for relaxation.",
+    "question": "Which activity would you find most appealing for unwinding?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Visiting an art museum or attending a philosophical debate to stimulate your mind.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Exploring a new cultural neighborhood or trying a unique and experimental cuisine.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Enjoying a familiar hobby at home, like reading or gardening, in a comfortable setting.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Relaxing with a simple and predictable routine, such as watching a favorite movie or taking a nap.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q227",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a group discussion and want to subtly steer the conversation to your preferred topic.",
+    "question": "How do you typically guide the discussion?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Subtly introduce related points that gradually shift the focus towards your topic of interest.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Use strategic questions and comments to nudge the conversation in your desired direction.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Wait for a natural pause and then directly introduce your topic, hoping it's well-received.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Let the conversation flow naturally, participating but not actively trying to change the subject.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q228",
+    "trait": "Machiavellianism",
+    "scenario": "You are managing a team and need to motivate them to work harder for a critical project.",
+    "question": "What is your approach to team motivation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a competitive environment, subtly playing team members against each other to boost output.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Use incentives and rewards strategically, promising benefits that align with individual ambitions.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Inspire team members by appealing to their sense of purpose and the project’s importance.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Clearly communicate project goals and expectations, relying on professional commitment.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q229",
+    "trait": "Narcissism",
+    "scenario": "You are receiving an award for your professional achievements at a public ceremony.",
+    "question": "What is your primary feeling as you walk on stage to accept the award?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel a sense of triumph and relish in the admiration and applause from the audience.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Expect the recognition as a deserved acknowledgment of your superior talents and hard work.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel grateful for the recognition and appreciate the opportunity to acknowledge others.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel slightly uncomfortable with the attention, preferring to focus on the collective effort.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q230",
+    "trait": "Narcissism",
+    "scenario": "You are asked to give feedback on a presentation given by a colleague.",
+    "question": "How do you typically deliver your feedback?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Use the feedback to subtly showcase your superior knowledge and insight in the subject matter.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Frame your feedback in a way that highlights your expertise and positions you as an authority.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Provide constructive feedback, focusing on specific areas for improvement and positive suggestions.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Offer general encouragement and avoid direct criticism, focusing on the positive aspects.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q231",
+    "trait": "Psychopathy",
+    "scenario": "You are in a team project where you notice a rule is hindering progress.",
+    "question": "How do you typically deal with rules that impede efficiency?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Ignore the rule entirely if it’s clearly slowing down progress and no one is likely to notice.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Bend the rule to your advantage, justifying it by the need to achieve the project goals faster.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Adhere to the rule, but try to find creative ways to work around it without breaking it.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Strictly follow the rule, believing rules are there for a reason and should always be respected.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q232",
+    "trait": "Psychopathy",
+    "scenario": "You are in a situation where you can gain a significant advantage by spreading a rumor about a rival.",
+    "question": "How likely are you to spread a damaging rumor to get ahead?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if the rumor is effective and the source cannot be traced back to you.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s the most efficient way to eliminate competition and secure your advantage.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid spreading rumors, believing in fair competition and ethical conduct.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to spread rumors, prioritizing honesty and integrity over personal gain.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q281",
+    "trait": "Extraversion",
+    "scenario": "You are invited to a networking event in a field you're not very familiar with.",
+    "question": "How do you approach networking in an unfamiliar domain?",
+    "options": [
+      {
+        "label": "A",
+        "text": "See it as an exciting opportunity to explore a new field and meet a diverse group of people.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Use it as a chance to broaden your horizons and make connections outside your usual circle.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel slightly hesitant but willing to attend, focusing on learning rather than socializing extensively.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Prefer to skip it, feeling more comfortable networking in areas where you have established expertise.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q282",
+    "trait": "Extraversion",
+    "scenario": "You are offered a job that is significantly higher paying but requires you to work remotely and mostly alone.",
+    "question": "How do you weigh the job offer?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Consider it positively, focusing on the financial benefits and seeing remote work as a new experience.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Evaluate it based on career growth, assuming you can adapt to remote work and find social outlets elsewhere.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Hesitate due to the remote nature, worrying about missing workplace social interactions and team dynamics.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Likely decline, as you value a vibrant, social work environment over a higher salary and remote setting.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q283",
+    "trait": "Conscientiousness",
+    "scenario": "You are asked to organize a charity event with minimal resources and time.",
+    "question": "What is your first step in organizing the charity event?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Develop a highly efficient plan, prioritizing essential tasks and meticulously managing limited resources.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Create a streamlined checklist and timeline, focusing on the most critical actions to ensure a successful event.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Start with a basic framework, handling tasks as they become urgent, adapting to resource constraints.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Begin with a general concept, trusting in your ability to manage spontaneously without detailed planning.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q284",
+    "trait": "Conscientiousness",
+    "scenario": "You are preparing for a marathon and have several months to train.",
+    "question": "How do you structure your training regimen?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Design a detailed training schedule, incrementally increasing mileage and tracking progress meticulously.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Create a systematic plan, setting weekly goals and monitoring your performance to optimize training.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Train regularly but flexibly, adjusting your routine based on how you feel and your schedule.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Train casually, running when you feel like it without a structured plan, focusing on enjoyment.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q285",
+    "trait": "Agreeableness",
+    "scenario": "You are in a group discussion and someone makes a statement you strongly disagree with, but others seem to agree.",
+    "question": "How do you express your disagreement?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Politely express your differing opinion, focusing on common ground and respecting others’ views.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Gently voice your perspective, ensuring it’s heard without disrupting the group's harmony.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Assertively state your disagreement, prioritizing the accuracy and logic of your viewpoint.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain silent to avoid conflict, going along with the group's consensus to maintain group peace.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q286",
+    "trait": "Agreeableness",
+    "scenario": "A friend is sharing a personal story that makes you uncomfortable because it's too intimate.",
+    "question": "How do you react to your friend's oversharing?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Listen empathetically but gently try to steer the conversation towards less personal topics.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Politely acknowledge their sharing, then subtly change the subject to something more comfortable for both.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Excuse yourself briefly, creating distance from the uncomfortable situation.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "React with visible discomfort, hoping they'll notice and stop sharing such personal details.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q287",
+    "trait": "Neuroticism",
+    "scenario": "You are asked to take on a leadership role in a project with high visibility and stakes.",
+    "question": "What are your primary feelings about this leadership opportunity?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel intensely apprehensive and inadequate, doubting your leadership abilities and fearing public scrutiny.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience significant self-doubt and anxiety, worrying excessively about potential failures and negative judgment.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel a mix of nervousness and excitement, viewing it as a significant challenge and a chance to prove yourself.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with confidence and determination, seeing it as a natural progression and a chance to excel.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q288",
+    "trait": "Neuroticism",
+    "scenario": "You are waiting for the results of a medical test known to have a significant chance of serious findings.",
+    "question": "How do you spend the waiting period?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Obsessively research possible negative outcomes and feel consumed by worry and dread.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience constant anxiety and struggle to distract yourself from the potential bad news.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to stay positive and engage in distracting activities, hoping for the best possible outcome.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain calm and carry on with your routine, accepting the uncertainty and awaiting the results practically.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q289",
+    "trait": "Openness",
+    "scenario": "You are choosing a new genre of music to explore.",
+    "question": "Which genre sparks your curiosity the most?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Experimental electronic music or avant-garde jazz that pushes the boundaries of sound and composition.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "World music or fusion genres that blend diverse cultural traditions and innovative musical forms.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Popular genres like pop or rock, focusing on widely appreciated and easily accessible music.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Classic genres like classical or jazz standards, appreciating established forms and timeless melodies.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q290",
+    "trait": "Openness",
+    "scenario": "You are planning to spend your vacation in a foreign country.",
+    "question": "What kind of travel experience are you seeking?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Immersive cultural experiences in remote or less-traveled regions, seeking deep cultural understanding.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Exploration of unique and offbeat destinations, focusing on novelty and unconventional adventures.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Visits to popular tourist landmarks and famous sites, enjoying well-trodden and established routes.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Relaxing in comfortable and familiar settings, prioritizing ease and minimal cultural immersion.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q291",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a team meeting and realize that taking credit for another team member's idea could significantly impress your superiors.",
+    "question": "How likely are you to take credit for your teammate's idea in this situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it enhances your reputation with superiors and the teammate is unlikely to object.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s the most effective way to gain recognition and advance your career interests.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid taking credit, believing in ethical conduct and acknowledging others’ contributions fairly.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to take credit, valuing honesty and team integrity over personal career advancement.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q292",
+    "trait": "Machiavellianism",
+    "scenario": "You are managing a project and need to assign tasks to team members.",
+    "question": "How do you decide task assignments to maximize your personal influence and control?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Assign critical tasks to team members who are most likely to be influenced by you, consolidating control.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Strategically distribute tasks to build alliances and ensure key team members are indebted to you.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Assign tasks based on skills and project needs, prioritizing efficiency and project success.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Distribute tasks fairly and equitably, ensuring everyone has opportunities for growth and contribution.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q293",
+    "trait": "Narcissism",
+    "scenario": "You are asked to lead a company-wide initiative and are given significant autonomy.",
+    "question": "What is your primary leadership focus for this initiative?",
+    "options": [
+      {
+        "label": "A",
+        "text": "To shape the initiative to reflect your personal vision and leadership, ensuring it enhances your reputation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "To direct the initiative in a way that prominently showcases your unique skills and strategic capabilities.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "To lead the initiative collaboratively, empowering team members and ensuring shared success and ownership.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "To focus on the initiative's goals and outcomes, ensuring it benefits the company and aligns with organizational objectives.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q294",
+    "trait": "Narcissism",
+    "scenario": "You are in a team meeting and a colleague receives praise for an idea you believe is less innovative than yours.",
+    "question": "How do you typically react to this situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel frustrated and believe your superior ideas are not being adequately recognized or valued.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Consider subtly pointing out the limitations of their idea and highlighting the greater innovation of yours.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Acknowledge their idea positively, focusing on the team's collaborative spirit and shared objectives.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel supportive of team success, regardless of whose idea is chosen, valuing collective progress.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q295",
+    "trait": "Psychopathy",
+    "scenario": "You are in a competitive game and realize you can cheat without getting caught to win.",
+    "question": "How likely are you to cheat if it guarantees victory and avoids consequences?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if cheating ensures winning and the risk of detection is virtually nonexistent.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider cheating, if it's the most effective way to secure victory and avoid losing.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid cheating, believing fair play and honest competition are more important than winning.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to cheat, valuing integrity and sportsmanship above the desire to win at all costs.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q296",
+    "trait": "Psychopathy",
+    "scenario": "You are in a position to allocate blame for a team failure and can easily shift it onto a less powerful team member.",
+    "question": "How likely are you to shift the blame to avoid personal repercussions?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it effectively deflects blame from you and onto someone less able to defend themselves.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider shifting blame, if it’s the most convenient way to escape responsibility and negative consequences.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid shifting blame, believing in accountability and taking responsibility for your part in team failures.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to shift blame, valuing honesty and ethical leadership even when facing negative outcomes.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q297",
+    "trait": "Extraversion",
+    "scenario": "You are at a conference and find yourself with a long break between sessions.",
+    "question": "How do you typically spend your break time to maximize your conference experience?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Actively seek out networking opportunities, attending every possible social event and gathering.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Engage in as many conversations as possible, aiming to exchange contacts and build new professional relationships.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Use the time to review session notes and prepare for upcoming sessions, finding a quiet spot to focus.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Take a break from the conference bustle, finding a peaceful place to relax and recharge alone.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q298",
+    "trait": "Extraversion",
+    "scenario": "You are planning a weekend activity with your partner.",
+    "question": "What kind of weekend activity do you suggest to spend time together?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Going to a large social event or festival, enjoying the energy of crowds and shared excitement.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Attending a lively concert or performance, seeking dynamic and engaging social experiences.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Having a quiet dinner at home or a relaxed evening in, focusing on intimate conversation and connection.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Enjoying a peaceful weekend retreat, prioritizing solitude and relaxation away from social interactions.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q299",
+    "trait": "Conscientiousness",
+    "scenario": "You are tasked with managing a complex and long-term project with numerous phases.",
+    "question": "How do you approach managing such a long-term project?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Develop a highly detailed, phase-by-phase project plan, with meticulous milestones and timelines for each stage.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Implement a systematic project management methodology, regularly reviewing progress and adjusting plans proactively.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Establish a general project outline, focusing on key milestones but allowing flexibility in execution and timelines.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Keep a broad overview of the project, managing phases as they come without getting bogged down in long-term specifics.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q300",
+    "trait": "Conscientiousness",
+    "scenario": "You have made a promise to yourself to exercise regularly.",
+    "question": "How do you ensure you stick to your exercise commitment?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a strict exercise schedule, setting specific times and types of workouts for each day of the week.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Systematically track your workouts and set measurable goals to monitor your progress and maintain discipline.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Exercise when you feel motivated, fitting it into your day when it’s convenient and appealing.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Exercise casually, without a rigid schedule, trusting in your general intention to stay active.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q301",
+    "trait": "Extraversion",
+    "scenario": "You are planning a team-building activity for your colleagues.",
+    "question": "What kind of activity do you propose to maximize team engagement?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Organize a high-energy outdoor adventure challenge that requires teamwork and physical activity.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Suggest a large social gathering with music, dancing, and interactive games to encourage mingling.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Plan a relaxed workshop focused on skill-building and quiet collaboration in smaller groups.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Opt for a low-key team lunch or coffee break, allowing for informal chats and casual bonding.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q302",
+    "trait": "Extraversion",
+    "scenario": "You have a free evening and can choose how to spend it.",
+    "question": "What are you most likely to do?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Call up friends to see if anyone is free to go out for dinner or drinks at a lively place.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Look for a local social event or gathering to attend, eager to meet new people.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Enjoy a quiet evening at home, perhaps reading or pursuing a solitary hobby.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Relax at home with a calm activity, like watching a movie or listening to peaceful music.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q303",
+    "trait": "Conscientiousness",
+    "scenario": "You are given a complex project with a long deadline.",
+    "question": "How do you typically start working on such a project?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Immediately break down the project into smaller, manageable tasks with deadlines for each.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Create a detailed timeline and project plan, outlining each step and resource needed.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Start by getting a general understanding of the project, planning to delve deeper later.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Begin working on the parts of the project that seem most interesting initially, without a strict plan.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q304",
+    "trait": "Conscientiousness",
+    "scenario": "You notice you are consistently late for meetings.",
+    "question": "What is your most likely approach to address this issue?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Set multiple alarms and reminders, and plan to arrive at least 15 minutes early for every meeting.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Analyze your schedule to identify time-wasting activities and optimize your routine for punctuality.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to be more mindful of time, aiming to leave for meetings a few minutes earlier than usual.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Accept that you are occasionally late and focus on making the most of the meeting once you arrive.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q305",
+    "trait": "Agreeableness",
+    "scenario": "You are in a long queue at a coffee shop, and someone cuts in line ahead of you.",
+    "question": "How do you typically react?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Politely point out that there is a queue and ask them to join the back, maintaining a friendly tone.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Gently mention that you believe they may have unintentionally cut in line, assuming it was a mistake.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel annoyed but say nothing, letting it go to avoid any potential confrontation.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Ignore it completely, assuming they have a valid reason or are in a greater hurry.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q306",
+    "trait": "Agreeableness",
+    "scenario": "A colleague takes credit for an idea that was originally yours during a team meeting.",
+    "question": "What is your approach to handling this situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "In a private conversation, gently remind your colleague of your original contribution, seeking acknowledgement.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Focus on the team's success and let it pass, assuming it was an oversight rather than intentional.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Directly correct your colleague in front of everyone, ensuring your idea is recognized immediately.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel resentful but remain silent, deciding to be more assertive in future meetings to prevent recurrence.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q307",
+    "trait": "Neuroticism",
+    "scenario": "You receive critical feedback on a project you worked hard on.",
+    "question": "What is your immediate emotional reaction?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel deeply upset and personally attacked, dwelling on the negative comments and feeling inadequate.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Become very anxious and worried about your performance, fearing it will impact your reputation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel a bit disappointed but see it as an opportunity to learn and improve your skills.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it analytically, focusing on the specific points of criticism to understand how to do better next time.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q308",
+    "trait": "Neuroticism",
+    "scenario": "You are about to give a presentation to senior management.",
+    "question": "What are your feelings leading up to the presentation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Experience significant anxiety and fear of making mistakes or not meeting expectations.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Feel intensely nervous and preoccupied with all the potential things that could go wrong during the presentation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel a bit of nervousness but also excitement about sharing your work and ideas.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with calm confidence, focusing on delivering your message effectively and professionally.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q309",
+    "trait": "Openness",
+    "scenario": "You have the opportunity to redecorate your living room.",
+    "question": "What style are you most inclined to choose?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Choose a very modern and avant-garde style, incorporating unique and unconventional design elements.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Opt for an eclectic and bohemian style, mixing different textures, colors, and art forms to create a unique space.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Select a classic and timeless style, focusing on comfort and familiar, traditional decor.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Prefer a minimalist and functional style, prioritizing simplicity and practicality over elaborate designs.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q310",
+    "trait": "Openness",
+    "scenario": "You are planning a weekend trip and need to decide on the destination.",
+    "question": "What kind of place appeals to you most for a weekend getaway?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A remote and undiscovered location, offering a chance to explore something completely new and off the beaten path.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A culturally rich city known for its art scene, experimental cuisine, and unique local experiences.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A well-known and popular tourist destination with established attractions and comfortable amenities.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A quiet and familiar countryside retreat, providing a relaxing and predictable environment.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q311",
+    "trait": "Machiavellianism",
+    "scenario": "You are assigned to lead a project team with members who have conflicting personalities.",
+    "question": "How do you manage the team dynamics to ensure project success?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Strategically use the personality clashes to create competition and drive individual performance.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Identify and leverage the ambitions and vulnerabilities of each team member to influence their cooperation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Focus on clear communication and establish ground rules for respectful interaction and collaboration.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Attempt to mediate conflicts and foster a harmonious team environment, prioritizing team morale.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q312",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a negotiation where the other party is being emotionally manipulative.",
+    "question": "How do you handle their emotional tactics to achieve your goals?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Use their emotional tactics against them, subtly mirroring their manipulation to gain leverage.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Remain detached and rational, using their emotional responses to predict their moves and outmaneuver them.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Acknowledge their emotions but firmly steer the conversation back to facts and logical arguments.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Try to empathize with their emotional state and find a mutually agreeable solution that respects their feelings.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q313",
+    "trait": "Narcissism",
+    "scenario": "You are asked to mentor a junior colleague who is talented but also somewhat arrogant.",
+    "question": "What is your primary focus in your mentoring approach?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Use the mentoring opportunity to subtly demonstrate your superior skills and experience, guiding them to admire you.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Focus on shaping them in your image, molding their approach and thinking to align with your own methods.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Help them develop their talents while also fostering humility and a collaborative spirit.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Provide guidance and support, focusing on their professional growth and helping them reach their full potential.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q314",
+    "trait": "Narcissism",
+    "scenario": "You are part of a group project where you feel your ideas are consistently overlooked.",
+    "question": "How do you respond to this lack of recognition?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Become increasingly vocal and assertive, ensuring your ideas are heard and acknowledged as superior.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Subtly undermine the ideas of others to highlight the value and brilliance of your own contributions.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Continue to contribute your ideas, hoping that eventually your value will be recognized by the team.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Withdraw from actively participating, feeling unappreciated and deciding to focus on individual work.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q315",
+    "trait": "Psychopathy",
+    "scenario": "You are in a competitive sales environment where bending the truth could significantly increase your sales.",
+    "question": "How likely are you to exaggerate product benefits to close a deal?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it guarantees a sale and the exaggeration is unlikely to be discovered or cause harm.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a common practice in the industry and necessary to stay competitive.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid exaggerating, preferring to rely on honest representation and building trust with clients.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to bend the truth, valuing integrity and long-term client relationships over short-term gains.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q316",
+    "trait": "Psychopathy",
+    "scenario": "You are managing a project budget and realize you can cut corners on safety measures to save money.",
+    "question": "How likely are you to reduce safety expenses to stay within budget?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if the safety risks seem minimal and cost savings are critical for project success.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if the safety regulations appear overly strict or unnecessary for this specific project.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid cutting safety expenses, prioritizing safety and ethical responsibility even if it impacts the budget.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to compromise on safety, believing safety is paramount regardless of budget constraints.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q317",
+    "trait": "Extraversion",
+    "scenario": "You are invited to a party where you know only a few people.",
+    "question": "How do you usually behave at such parties?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Actively mingle and introduce yourself to as many new people as possible, eager to expand your social circle.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Seek out the people you know initially, but also make an effort to join conversations with new groups and individuals.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Stick with the people you know, feeling more comfortable in familiar company and less inclined to socialize widely.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain mostly on the periphery, observing the party and engaging in minimal social interaction.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q318",
+    "trait": "Extraversion",
+    "scenario": "You are working on a project that requires extensive networking and client interaction.",
+    "question": "How do you feel about this aspect of the project?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel energized and excited by the opportunity to meet new people and build professional relationships.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "See it as a stimulating challenge and an opportunity to enhance your communication and social skills.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel somewhat apprehensive, preferring to focus on the more analytical or technical parts of the project.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Find it draining and prefer to minimize direct client interaction, focusing on behind-the-scenes tasks.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q319",
+    "trait": "Conscientiousness",
+    "scenario": "You are organizing your workspace.",
+    "question": "What best describes your approach to workspace organization?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Systematically categorize and label everything, creating a meticulously organized and efficient workspace.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Arrange items logically and create a structured system for maintaining order and easy access to materials.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Tidy up the most cluttered areas, focusing on functionality but not necessarily perfect order.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Generally clear surfaces but don't worry too much about detailed organization, prioritizing a comfortable feel.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q320",
+    "trait": "Conscientiousness",
+    "scenario": "You have a sudden change in your daily schedule.",
+    "question": "How do you adapt to unexpected disruptions in your routine?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Immediately revise your schedule, re-planning your day to accommodate the change and maintain productivity.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Quickly adjust your plans, prioritizing key tasks and reorganizing your day to stay on track despite the disruption.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel slightly thrown off but adjust as needed, taking a more flexible approach to the day's plans.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Let the disruption alter your plans significantly, taking the day as it comes without strict rescheduling.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q321",
+    "trait": "Agreeableness",
+    "scenario": "You are in a group project and another member is being unfairly criticized by the team leader.",
+    "question": "How do you respond to this situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Speak up to defend your teammate, gently correcting any inaccuracies and offering a balanced perspective.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to mediate the situation, facilitating a constructive dialogue between your teammate and the team leader.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Remain silent to avoid conflict, but offer private support to your teammate after the meeting.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Avoid getting involved, believing it's best to let individuals handle their own conflicts and feedback.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q322",
+    "trait": "Agreeableness",
+    "scenario": "You are choosing a movie to watch with a group of friends, and everyone has different preferences.",
+    "question": "How do you facilitate the movie selection process?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Suggest a genre that everyone generally enjoys and try to find a movie within that category that accommodates most tastes.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Propose a few options that represent different preferences and facilitate a vote to ensure everyone feels heard.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Offer your preference but remain flexible, willing to go along with whatever the majority decides.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Let others decide, not wanting to impose your choice and happy to watch whatever is selected.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q323",
+    "trait": "Neuroticism",
+    "scenario": "You experience a minor setback in your personal life.",
+    "question": "What is your typical response to small disappointments?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Tend to magnify the setback, feeling overwhelmed and fearing it will lead to larger problems.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Become easily discouraged and pessimistic, worrying about the future and feeling things are going downhill.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Acknowledge the disappointment but quickly try to move on, focusing on solutions and future improvements.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Take it in stride and maintain a positive outlook, seeing minor setbacks as normal and temporary.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q324",
+    "trait": "Neuroticism",
+    "scenario": "You are starting a new hobby that requires learning a complex skill.",
+    "question": "What are your thoughts about the learning process?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Worry about the steep learning curve and feel anxious about potential frustration and failure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Feel apprehensive about the challenges ahead, anticipating stress and self-doubt during the learning process.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel motivated by the challenge and see the learning process as an exciting opportunity for growth.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with a calm and determined mindset, focusing on the steps needed to master the skill gradually.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q325",
+    "trait": "Openness",
+    "scenario": "You are choosing a book to read for leisure.",
+    "question": "What genre are you most likely to pick?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A genre-bending novel that experiments with narrative structure and explores unconventional themes.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A book from a lesser-known author or a translated work, offering a unique and diverse perspective.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A popular and well-reviewed book within a familiar genre that you know you enjoy.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A straightforward and easy-to-read book, perhaps a lighthearted novel or a classic in a comfortable genre.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q326",
+    "trait": "Openness",
+    "scenario": "You are selecting a piece of art to display in your home.",
+    "question": "What kind of artwork are you drawn to?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Abstract or surreal art that challenges conventional aesthetics and provokes thought and interpretation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Art that incorporates mixed media or unconventional materials, demonstrating innovation and breaking boundaries.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Traditional landscapes or portraits, appreciating classic forms and recognizable beauty.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Simple and aesthetically pleasing art that complements your decor and creates a harmonious environment.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q327",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a negotiation and realize that feigning ignorance could give you an advantage.",
+    "question": "How likely are you to pretend not to understand something to manipulate the situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it allows you to gather more information and control the pace of the negotiation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a subtle tactic to mislead the other party and secure a better deal.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid feigning ignorance, preferring to be straightforward and honest in your negotiation approach.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to pretend ignorance, valuing transparency and ethical conduct in all interactions.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q328",
+    "trait": "Machiavellianism",
+    "scenario": "You are managing a team and need to implement unpopular changes for the company's benefit.",
+    "question": "What is your strategy for implementing these changes effectively?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Frame the changes as inevitable and beneficial for individual team members' long-term career prospects.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Use persuasive communication and strategic alliances within the team to minimize resistance and ensure smooth implementation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Clearly communicate the reasons for the changes and address concerns openly and transparently.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Focus on providing support and resources to help team members adapt to the changes, emphasizing fairness and empathy.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q329",
+    "trait": "Narcissism",
+    "scenario": "You are recognized for your achievements in a team setting.",
+    "question": "What is your preferred way to receive recognition?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Prefer individual accolades and public praise that clearly highlight your unique contributions to the team's success.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Seek to be acknowledged as the driving force behind the team's achievements, ensuring your leadership is recognized.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Appreciate shared team recognition, valuing collective success and acknowledgement of everyone's efforts.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel somewhat uncomfortable with excessive attention, preferring quieter, more personal acknowledgements of your work.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q330",
+    "trait": "Narcissism",
+    "scenario": "You are in a social gathering where someone else is receiving a lot of attention and praise.",
+    "question": "How do you typically react in such situations?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel resentful or envious, believing you are more deserving of the attention and recognition.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to subtly steer the conversation back to yourself, finding ways to highlight your own accomplishments and qualities.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Offer genuine congratulations and support, happy for their success and comfortable with others being in the spotlight.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain indifferent, not feeling the need to compete for attention and content to observe from a distance.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q331",
+    "trait": "Psychopathy",
+    "scenario": "You are in a situation where you need to get ahead quickly, and manipulating someone emotionally could be effective.",
+    "question": "How likely are you to use emotional manipulation to achieve your goals?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it’s the most efficient way to get what you want and the emotional impact on the person is secondary.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it ensures your success and the emotional manipulation is subtle and unlikely to cause lasting harm.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid emotional manipulation, believing in fair and ethical means to achieve your objectives.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to use emotional manipulation, prioritizing respect and integrity in all your interactions.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q332",
+    "trait": "Psychopathy",
+    "scenario": "You witness someone being unfairly blamed for a mistake you know was partly caused by system failures.",
+    "question": "What is your response to this unfair blame?",
+    "options": [
+      {
+        "label": "A",
+        "text": "See it as a strategic opportunity to distance yourself from any potential repercussions and let the blame fall elsewhere.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Feel indifferent, considering it a normal part of organizational politics and power dynamics.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Consider speaking up to provide context, aiming to offer a more balanced view without directly contradicting the blame.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Intervene immediately to correct the misattribution of blame, ensuring fairness and accuracy in accountability.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q333",
+    "trait": "Extraversion",
+    "scenario": "You are at a workshop and there's an opportunity to present your work to the group.",
+    "question": "How do you feel about presenting in this setting?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Eager to present, seeing it as a chance to engage with others and get energized by sharing your work publicly.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Find it a stimulating opportunity to connect with colleagues and receive valuable feedback in a group setting.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel somewhat hesitant, preferring to discuss your work in smaller groups or one-on-one settings.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel uncomfortable with presenting to a group, preferring to keep your work private or share it in written form.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q334",
+    "trait": "Extraversion",
+    "scenario": "You are planning a vacation and considering different types of trips.",
+    "question": "What kind of vacation environment do you typically prefer?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A vibrant city with bustling streets, crowded markets, and numerous social activities and events.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A popular resort or tourist destination where you can meet many new people and enjoy group activities.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A quiet retreat in nature, offering solitude and peace away from social interactions and crowds.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A secluded cabin or remote location, prioritizing relaxation and minimal social engagement.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q335",
+    "trait": "Conscientiousness",
+    "scenario": "You are responsible for managing finances for a group event.",
+    "question": "How do you approach budgeting and expense tracking for this event?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Develop a detailed budget spreadsheet, meticulously tracking every expense and ensuring strict adherence to financial limits.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Create a structured budget plan, regularly monitoring expenses and making adjustments to stay within allocated funds.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Set a general budget guideline, keeping track of major expenses but allowing for some flexibility and adjustments as needed.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Keep a loose overview of spending, trusting in your ability to manage costs without detailed tracking or a rigid budget.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q336",
+    "trait": "Conscientiousness",
+    "scenario": "You have committed to a fitness challenge with specific workout requirements.",
+    "question": "How do you ensure you follow through with the fitness challenge?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a rigorous workout schedule, tracking every session and holding yourself strictly accountable to meet all requirements.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Develop a systematic training plan, setting weekly workout goals and monitoring your progress to maintain discipline.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Aim to exercise regularly, fitting workouts into your schedule when possible and motivated, without strict adherence to the plan.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Exercise casually, participating in workouts when you feel like it, focusing on general activity rather than strict adherence to the challenge.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q337",
+    "trait": "Agreeableness",
+    "scenario": "You are in a group discussion and someone is expressing a controversial opinion that might offend others.",
+    "question": "How do you navigate this potentially sensitive conversation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Gently steer the conversation towards more neutral topics, seeking to minimize potential discomfort and maintain harmony.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to mediate by acknowledging different viewpoints and encouraging respectful dialogue, even on sensitive topics.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Challenge the controversial opinion directly, prioritizing factual accuracy and logical reasoning over group harmony.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain silent and disengaged, avoiding involvement in potentially contentious discussions and focusing on your own thoughts.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q338",
+    "trait": "Agreeableness",
+    "scenario": "You are working with a client who is very demanding and often unreasonable.",
+    "question": "How do you manage your interactions with this difficult client?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Focus on building rapport and understanding their perspective, trying to accommodate their demands as much as possible.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Politely negotiate and seek compromises, aiming to meet their needs while also setting reasonable boundaries.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Address their unreasonable demands directly and assertively, setting clear limits and expectations for professional conduct.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Minimize interaction as much as possible, delegating communication to others to avoid direct conflict and stress.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q339",
+    "trait": "Neuroticism",
+    "scenario": "You are facing a period of significant uncertainty in your career.",
+    "question": "How do you cope with professional ambiguity and instability?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Become intensely anxious and preoccupied with worst-case scenarios, feeling overwhelmed by the lack of control.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience high levels of stress and worry, constantly thinking about potential negative outcomes and feeling insecure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to focus on the aspects you can control and maintain a hopeful outlook, seeking opportunities amidst the uncertainty.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Accept the uncertainty as a part of professional life and remain composed, focusing on proactive steps to navigate the situation.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q340",
+    "trait": "Neuroticism",
+    "scenario": "You are asked to take on a task that is completely outside your area of expertise.",
+    "question": "What is your initial reaction to being assigned this unfamiliar task?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel immediately panicked and overwhelmed, doubting your ability to learn and perform adequately.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience significant self-doubt and anxiety, fearing potential mistakes and negative feedback due to inexperience.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel a mix of nervousness and curiosity, viewing it as a challenging but potentially rewarding learning opportunity.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with a pragmatic mindset, focusing on learning the necessary skills and tackling the task systematically.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q341",
+    "trait": "Openness",
+    "scenario": "You are choosing a documentary to watch.",
+    "question": "Which topic would you find most engaging for a documentary?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A documentary exploring a niche subculture or a little-known historical event, uncovering hidden worlds and stories.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A documentary that challenges conventional thinking or presents a radical new perspective on a familiar subject.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A documentary about a well-documented historical event or a widely recognized social issue, providing clear information.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A documentary focused on nature or wildlife, offering beautiful visuals and relaxing viewing experience.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q342",
+    "trait": "Openness",
+    "scenario": "You are selecting a restaurant for a special occasion.",
+    "question": "What kind of dining experience are you looking for?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A restaurant offering experimental cuisine or a fusion of unusual flavors, seeking a novel and adventurous culinary experience.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A unique and thematic restaurant with an immersive atmosphere and unconventional dining concept.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A well-regarded restaurant known for its classic dishes and consistent quality, ensuring a reliable and enjoyable meal.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A comfortable and familiar restaurant with a relaxed ambiance and predictable menu, prioritizing ease and comfort.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q343",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a meeting and realize that exaggerating your role in a project could impress your superiors.",
+    "question": "How likely are you to inflate your contribution to gain favor?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it significantly enhances your standing with superiors and the exaggeration is subtle and believable.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s the most effective way to ensure recognition and advance your career interests.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid inflating your role, preferring to be honest and transparent about your contributions and team efforts.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to exaggerate, valuing honesty and integrity over personal gain or career advancement.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q344",
+    "trait": "Machiavellianism",
+    "scenario": "You are managing a project and need to delegate tasks to team members to maximize your own time.",
+    "question": "How do you strategically assign tasks to free up your schedule for more important activities?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Delegate less critical tasks to reliable team members, retaining control over high-impact and visible assignments.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Assign tasks strategically to build dependencies, making sure key processes rely on your involvement for coordination and control.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Delegate tasks based on team members' skills and project needs, prioritizing efficiency and balanced workload distribution.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Distribute tasks equitably, ensuring everyone has opportunities to contribute and develop new skills, focusing on team growth.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q345",
+    "trait": "Narcissism",
+    "scenario": "You are asked to give a speech at a conference where many experts in your field will be present.",
+    "question": "What is your primary goal for your conference speech?",
+    "options": [
+      {
+        "label": "A",
+        "text": "To deliver a speech that showcases your expertise and thought leadership, establishing you as a prominent figure in the field.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "To impress the audience with your innovative ideas and unique insights, ensuring you stand out among other speakers.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "To share valuable knowledge and insights with the audience, contributing to the collective understanding and advancement of the field.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "To communicate your research clearly and effectively, ensuring the audience understands your key findings and their implications.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q346",
+    "trait": "Narcissism",
+    "scenario": "You are part of a team that is facing a significant challenge and potential failure.",
+    "question": "What is your focus during this difficult period?",
+    "options": [
+      {
+        "label": "A",
+        "text": "To ensure your individual efforts and contributions are recognized, regardless of the team's overall outcome.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "To position yourself as the key problem-solver or the most valuable member, highlighting your importance to the team.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "To support the team and work collaboratively to overcome the challenge, focusing on collective resilience and problem-solving.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "To maintain team morale and encourage a positive atmosphere, emphasizing shared effort and mutual support.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q347",
+    "trait": "Psychopathy",
+    "scenario": "You are in a competitive situation where sabotaging a rival’s work could secure your victory without direct detection.",
+    "question": "How likely are you to sabotage your rival to ensure you win?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if sabotage guarantees victory and the chances of being caught are virtually nonexistent.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider sabotage, if it’s the most effective way to eliminate competition and secure your desired outcome.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid sabotage, believing in fair competition and achieving success through your own merits and honest effort.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to engage in sabotage, prioritizing ethical conduct and sportsmanship over the desire to win.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q348",
+    "trait": "Psychopathy",
+    "scenario": "You are in a position to enforce a rule that is unpopular but necessary for overall order and efficiency.",
+    "question": "How likely are you to strictly enforce the unpopular rule, even if it causes short-term discontent?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if enforcing the rule ensures long-term efficiency and order, regardless of immediate negative reactions.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider strict enforcement, if it’s essential for maintaining control and achieving organizational goals.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to find a balance, enforcing the rule but also seeking to understand and address the reasons for its unpopularity.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Avoid strict enforcement if possible, preferring to maintain harmony and adapt rules to minimize discontent and resistance.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q349",
+    "trait": "Extraversion",
+    "scenario": "You are at a social event and notice someone looking lonely and isolated.",
+    "question": "What is your typical reaction to someone appearing isolated at a social event?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel compelled to approach them and initiate a conversation, aiming to include them and make them feel welcome.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Consider going over to introduce yourself and see if they would like to join your group or conversation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Notice them but assume they prefer to be alone or are simply observing, respecting their space.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Generally focus on your own interactions and assume someone else will eventually reach out to them if needed.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q350",
+    "trait": "Extraversion",
+    "scenario": "You are planning a weekend getaway with a group of friends.",
+    "question": "What kind of accommodation do you suggest for the group?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A large, shared house or villa that encourages group interaction and communal living, maximizing social time.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A hotel or resort with many social amenities and communal spaces, facilitating group activities and mingling with others.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Separate rooms or cabins to provide individual privacy and quiet spaces, balanced with communal areas for group activities.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Individual accommodations, such as separate hotel rooms or apartments, prioritizing personal space and autonomy for each person.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q351",
+    "trait": "Conscientiousness",
+    "scenario": "You have a personal project with a flexible deadline.",
+    "question": "How do you manage your time and workflow for a project without a strict deadline?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Set self-imposed deadlines and milestones, creating a structured schedule to ensure consistent progress and timely completion.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Develop a flexible but organized plan, allocating specific time slots each week for dedicated work on the project.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Work on the project intermittently, fitting it in when you have free time and feel motivated, without a fixed schedule.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach the project casually, working on it whenever you feel inspired, without any structured planning or time management.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q352",
+    "trait": "Conscientiousness",
+    "scenario": "You are asked to lead a team in a crisis situation that requires immediate and decisive action.",
+    "question": "What is your primary approach to leading in a high-pressure crisis?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Develop a detailed action plan, outlining specific steps and responsibilities, ensuring a structured and controlled response.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Create a clear and systematic framework for decision-making, ensuring efficient and organized action in a chaotic environment.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Provide general direction and empower team members to act spontaneously and adaptively based on the evolving situation.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Focus on maintaining a calm and flexible approach, trusting in your ability to respond intuitively and handle challenges as they arise.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q353",
+    "trait": "Agreeableness",
+    "scenario": "You are in a team meeting and a colleague proposes an idea that you know is flawed.",
+    "question": "How do you deliver your critique of their idea?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Gently point out the potential flaws, focusing on constructive feedback and suggesting alternative solutions collaboratively.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Frame your critique as questions and suggestions, inviting discussion and ensuring your colleague feels respected and valued.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Directly state the flaws in their idea, emphasizing the need for practicality and efficiency without sugarcoating the critique.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Avoid direct criticism and focus on the positive aspects of their idea, glossing over the flaws to maintain team harmony.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q354",
+    "trait": "Agreeableness",
+    "scenario": "You are choosing a gift for a friend who is known to be quite particular and critical.",
+    "question": "How do you approach selecting a gift for this friend?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Choose a thoughtful and personalized gift that reflects their known interests and preferences, demonstrating care and consideration.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Opt for a universally appreciated gift or a gift certificate, ensuring it’s something they can use or exchange without causing offense.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Choose a practical and functional gift, focusing on utility and avoiding anything too sentimental or potentially displeasing.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Select a generic and inoffensive gift, minimizing the risk of criticism and keeping the gesture simple and polite.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q355",
+    "trait": "Neuroticism",
+    "scenario": "You are about to receive important news that could significantly impact your life.",
+    "question": "How do you typically prepare yourself emotionally for potentially life-changing news?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Brace yourself for the worst, feeling intense anxiety and dread, and imagining all possible negative outcomes.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Become highly stressed and emotionally reactive, struggling to control your emotions and fearing the unknown.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to remain hopeful but realistic, acknowledging the uncertainty and preparing yourself to handle either positive or negative news.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with a calm and accepting attitude, focusing on your ability to adapt and manage whatever news you receive.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q356",
+    "trait": "Neuroticism",
+    "scenario": "You are facing a public speaking engagement in front of a large and unfamiliar audience.",
+    "question": "What is your primary concern about public speaking in this situation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Fear of intense scrutiny and negative judgment from the audience, worrying about making mistakes and being criticized.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience overwhelming stage fright and anxiety, feeling intensely uncomfortable and fearing a public failure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel some nervousness but also excitement about the opportunity to share your message and connect with a large audience.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with confidence and composure, focusing on clear communication and effective delivery of your speech.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q357",
+    "trait": "Openness",
+    "scenario": "You are choosing a type of entertainment for a relaxing evening at home.",
+    "question": "What kind of entertainment do you find most appealing for unwinding?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Engage in intellectually stimulating activities like solving complex puzzles or watching thought-provoking documentaries.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Explore creative outlets like writing, painting, or listening to avant-garde music to engage your imagination.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Enjoy familiar and comforting activities like watching a favorite sitcom or reading a light novel in a well-known genre.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Relax with simple and predictable routines, such as listening to popular music or watching easily digestible content.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q358",
+    "trait": "Openness",
+    "scenario": "You are planning to learn a new skill or hobby.",
+    "question": "What type of skill or hobby sparks your interest the most?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Learning a complex and abstract skill like theoretical physics or experimental philosophy to challenge your intellect.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Exploring a creative and unconventional hobby like improvisational comedy or abstract sculpture to express your imagination.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Learning a practical and useful skill like home repair or basic coding to enhance your everyday life.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Developing a relaxing and familiar hobby like gardening or knitting, focusing on comfort and routine.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q359",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a team project and realize that subtly undermining a colleague's performance could make you look better in comparison.",
+    "question": "How likely are you to subtly sabotage a colleague to enhance your own standing?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if the sabotage is untraceable and effectively elevates your perceived competence in the team.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a discreet way to improve your relative position and secure recognition for your efforts.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid undermining colleagues, believing in fair competition and achieving success based on your own merits.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to engage in sabotage, prioritizing ethical conduct and team integrity over personal advancement.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q360",
+    "trait": "Machiavellianism",
+    "scenario": "You are managing a project where resources are scarce, and you can subtly manipulate the allocation to benefit your own team.",
+    "question": "How likely are you to manipulate resource allocation to favor your team over others?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it ensures your team's success and the manipulation is discreet and unlikely to cause significant backlash.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a strategic move to secure resources and ensure your team's project is prioritized and successful.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid manipulating resource allocation, believing in fair distribution based on project needs and organizational priorities.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to manipulate resource allocation, prioritizing fairness and ethical resource management across all teams.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q361",
+    "trait": "Narcissism",
+    "scenario": "You are asked to lead a brainstorming session for a new product idea.",
+    "question": "What is your approach to leading the brainstorming session?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Steer the session to ensure your ideas are prominently featured and recognized as the most innovative and valuable.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Guide the discussion to highlight your strategic thinking and creative abilities, positioning yourself as the key visionary.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Facilitate an open and inclusive brainstorming session, encouraging diverse ideas and collaborative innovation from the team.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Create a structured and organized session, ensuring all team members have a chance to contribute and feel valued for their input.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q362",
+    "trait": "Narcissism",
+    "scenario": "You are in a team meeting and a colleague receives praise for something you believe you did better.",
+    "question": "How do you typically react to a colleague receiving praise that you feel you deserve more?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel slighted and believe your superior efforts are being overlooked or undervalued in favor of someone else.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Consider subtly pointing out the areas where your contributions were superior, ensuring your value is recognized.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Offer genuine congratulations and support, acknowledging their achievement and maintaining a positive team environment.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel happy for their recognition, focusing on the overall team success and collaborative achievements rather than individual accolades.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q363",
+    "trait": "Psychopathy",
+    "scenario": "You are in a game where you can bend the rules slightly to gain a significant advantage.",
+    "question": "How likely are you to bend the rules if it increases your chances of winning?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if bending the rules is subtle and gives you a competitive edge without directly breaking them.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider bending the rules, if it’s a strategic way to outmaneuver opponents and improve your odds of victory.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid bending rules, preferring to play fairly and within the established boundaries of the game.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to bend rules, valuing fair play and ethical competition over the desire to win at all costs.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q364",
+    "trait": "Psychopathy",
+    "scenario": "You are in a situation where you can easily manipulate data to make your performance metrics look better.",
+    "question": "How likely are you to manipulate data to improve your performance reports?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it enhances your performance metrics and the manipulation is unlikely to be detected or questioned.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider manipulating data, if it’s the most effective way to demonstrate success and advance your career.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid manipulating data, believing in honest reporting and accurate representation of your performance.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to manipulate data, prioritizing integrity and transparency in all performance evaluations.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q365",
+    "trait": "Extraversion",
+    "scenario": "You are attending a conference with both structured sessions and unstructured networking time.",
+    "question": "How do you balance your time between attending sessions and networking at conferences?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Prioritize networking opportunities, viewing sessions as secondary to social interactions and relationship building.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Actively seek out networking events and social gatherings, but also attend sessions that align with your key interests.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Focus primarily on attending sessions, allocating limited time for networking breaks and casual interactions.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Spend most of your time in sessions, using breaks for personal reflection or quiet work rather than extensive networking.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q366",
+    "trait": "Extraversion",
+    "scenario": "You are planning a birthday celebration for yourself.",
+    "question": "What kind of celebration do you envision for your birthday?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A large and lively party with many guests, music, and dancing, enjoying a high-energy social event.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A gathering at a popular venue or restaurant, inviting a wide circle of friends and acquaintances for a celebratory event.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A small and intimate dinner with close friends or family, focusing on meaningful conversations and personal connection.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A quiet day at home or a low-key outing with a few close individuals, prioritizing relaxation and personal enjoyment.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q367",
+    "trait": "Conscientiousness",
+    "scenario": "You are given a task with vague instructions and unclear expectations.",
+    "question": "How do you proceed when faced with ambiguity in task requirements?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Immediately seek clarification, requesting detailed instructions and specific expectations to ensure clear direction.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Develop a structured approach to seek out information, clarify requirements, and define a clear path forward.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Start working with the information available, adapting your approach as you gain more clarity and understanding.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Begin working tentatively, allowing for flexibility and adjustments, trusting that the path will become clearer as you progress.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q368",
+    "trait": "Conscientiousness",
+    "scenario": "You are managing a personal budget and need to reduce spending.",
+    "question": "What is your approach to cutting expenses and managing your budget?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a detailed budget analysis, meticulously tracking expenses and identifying specific areas for significant reduction.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Develop a systematic budget plan, prioritizing essential spending and strategically cutting non-essential expenses to save money.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Generally reduce spending across various areas, making small adjustments to save money without strict budgeting.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Make casual spending adjustments, cutting back on non-essentials when possible, without detailed budget planning or tracking.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q369",
+    "trait": "Agreeableness",
+    "scenario": "You are in a team meeting and a colleague is dominating the conversation and not letting others speak.",
+    "question": "How do you handle a colleague who monopolizes team discussions?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Politely interject and gently redirect the conversation, ensuring other team members have a chance to contribute equally.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to facilitate a more inclusive discussion by directly inviting quieter members to share their perspectives and ideas.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Wait for a natural pause and then assertively state your own viewpoint, aiming to regain control of the discussion.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain quiet and let the colleague continue, avoiding confrontation and not wanting to disrupt the flow of the meeting.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q370",
+    "trait": "Agreeableness",
+    "scenario": "You are planning a group outing and a friend suggests an activity that you personally dislike.",
+    "question": "How do you respond to your friend's suggestion?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Politely express your reservations but emphasize your willingness to go along with the group's decision to maintain harmony.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Suggest alternative activities that might be more appealing to everyone, trying to find a compromise that accommodates different tastes.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "State your dislike directly and suggest doing something else, prioritizing your own preferences in the group decision.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Go along with the suggestion without expressing your discomfort, avoiding any potential conflict or disagreement.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q371",
+    "trait": "Neuroticism",
+    "scenario": "You are asked to make a significant decision with limited information and time.",
+    "question": "How do you typically approach making important decisions under pressure?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel paralyzed by anxiety and indecision, struggling to weigh options and fearing making the wrong choice.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Become intensely stressed and worried about the potential consequences of your decision, feeling overwhelmed by the pressure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to quickly assess the available information and make a reasoned decision, accepting the inherent uncertainty.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain calm and decisive, trusting in your judgment and focusing on the most practical and logical course of action.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q372",
+    "trait": "Neuroticism",
+    "scenario": "You are facing a period of intense workload and tight deadlines.",
+    "question": "How do you manage stress and pressure during periods of high workload?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Become increasingly stressed and overwhelmed, feeling anxious and struggling to cope with the pressure.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience significant anxiety and tension, feeling constantly on edge and worried about meeting deadlines.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to manage stress by prioritizing tasks, taking breaks, and focusing on efficient workflow strategies.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain composed and focused, approaching the workload methodically and maintaining a calm and organized approach.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q373",
+    "trait": "Openness",
+    "scenario": "You are choosing a new hobby to pursue in your free time.",
+    "question": "What type of hobby are you most inclined to explore?",
+    "options": [
+      {
+        "label": "A",
+        "text": "A hobby that involves exploring abstract concepts or philosophical ideas, stimulating intellectual curiosity and deep thinking.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A hobby that allows for creative expression and experimentation with new forms or mediums, pushing artistic boundaries.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A hobby that is practical and productive, like gardening or woodworking, resulting in tangible and useful outcomes.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A hobby that is relaxing and routine-based, such as collecting stamps or knitting, providing comfort and predictability.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q374",
+    "trait": "Openness",
+    "scenario": "You are planning to spend a day off exploring your city.",
+    "question": "What kind of exploration are you most likely to undertake?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Explore a hidden or lesser-known part of the city, seeking out unique and unconventional experiences and discoveries.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Visit a series of art galleries or museums showcasing experimental or avant-garde art forms, engaging with new aesthetic ideas.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Visit well-known landmarks and popular tourist attractions, experiencing the city's established and recognized sites.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Take a leisurely walk through familiar neighborhoods or parks, enjoying a comfortable and routine exploration of the city.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q375",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a group project and realize that subtly manipulating team dynamics could improve your project outcome.",
+    "question": "How likely are you to manipulate team dynamics to enhance your project results?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it streamlines the project process and increases efficiency, leading to a more successful outcome.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a strategic way to optimize team performance and ensure the project is completed effectively and successfully.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid manipulating team dynamics, believing in honest collaboration and achieving success through fair and transparent teamwork.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to manipulate team dynamics, prioritizing ethical team interactions and respectful collaboration over project outcomes.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q376",
+    "trait": "Machiavellianism",
+    "scenario": "You are negotiating a business deal and realize that misleading the other party about your alternatives could give you a stronger position.",
+    "question": "How likely are you to mislead the other party about your options to gain a negotiating advantage?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if it significantly strengthens your negotiating position and the misleading information is unlikely to be verified.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a strategic tactic to gain leverage and secure the most favorable terms in the deal.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid misleading the other party, preferring to negotiate honestly and transparently, building trust and long-term relationships.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to mislead, prioritizing ethical negotiation practices and maintaining honesty and integrity throughout the process.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q377",
+    "trait": "Narcissism",
+    "scenario": "You are asked to lead a team known for being underperforming and demoralized.",
+    "question": "What is your primary leadership approach to turning around this underperforming team?",
+    "options": [
+      {
+        "label": "A",
+        "text": "To inspire the team by showcasing your exceptional leadership and vision, motivating them to strive for excellence under your guidance.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "To assert your authority and implement your strategies decisively, demonstrating your superior competence and driving the team to success.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "To empower team members and foster a collaborative environment, building shared ownership and collective responsibility for improvement.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "To focus on building team morale and creating a supportive atmosphere, emphasizing mutual respect and encouragement to improve performance.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q378",
+    "trait": "Narcissism",
+    "scenario": "You are in a group setting and notice that your expertise is significantly greater than others in the room on a specific topic.",
+    "question": "How do you typically engage in conversations where you possess superior knowledge?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Take the lead in discussions, ensuring your superior knowledge is evident and appreciated by everyone present.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Steer the conversation to showcase your expertise, subtly correcting and guiding others to demonstrate your intellectual superiority.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Share your knowledge when relevant and helpful, contributing to the conversation without dominating or overshadowing others.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Actively listen to others and encourage their contributions, offering your expertise only when specifically asked or truly needed.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q379",
+    "trait": "Psychopathy",
+    "scenario": "You are in a team project and realize that breaking a minor ethical rule could significantly benefit the project’s outcome.",
+    "question": "How likely are you to disregard a minor ethical rule to improve project results?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if breaking the rule ensures project success and the ethical breach is minor and unlikely to have serious consequences.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a pragmatic approach to achieve project goals and the ethical rule seems overly bureaucratic or restrictive.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid breaking ethical rules, believing in upholding ethical standards and achieving success through ethical means.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to disregard ethical rules, prioritizing ethical integrity and responsible conduct above project outcomes.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q380",
+    "trait": "Psychopathy",
+    "scenario": "You are managing a team and need to deliver bad news to a team member about their performance.",
+    "question": "How do you approach delivering negative feedback to a team member?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Deliver the feedback directly and bluntly, prioritizing clarity and efficiency over emotional considerations or personal feelings.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Communicate the feedback objectively, focusing on the facts and performance metrics, minimizing emotional engagement or empathy.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Deliver the feedback constructively, balancing directness with empathy and offering support for improvement and development.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it sensitively, focusing on maintaining a positive relationship and minimizing potential discomfort or negative emotional impact.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q381",
+    "trait": "Extraversion",
+    "scenario": "You are at a social gathering and find yourself in a lull in conversation with your group.",
+    "question": "How do you typically try to restart or energize a flagging conversation?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Actively introduce a new, exciting topic or story to inject energy and spark renewed group engagement and enthusiasm.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Ask an open-ended question to the group, prompting broader participation and inviting new perspectives to invigorate the conversation.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Wait for someone else to initiate a new topic or comfortably allow for a moment of quiet if the conversation naturally wanes.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Let the conversation fade naturally, preferring comfortable silences over forcing conversation if the group seems content.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q382",
+    "trait": "Extraversion",
+    "scenario": "You are planning a long road trip.",
+    "question": "What kind of travel companions do you prefer for a long journey?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Energetic and talkative companions who enjoy lively conversations and spontaneous social interactions throughout the trip.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Social and adaptable companions who are comfortable with both planned activities and spontaneous social engagements along the way.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Quiet and easygoing companions who appreciate peaceful travel and comfortable silences, respecting individual space and preferences.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Independent companions who are comfortable with separate activities and minimal social interaction during the journey, valuing personal space.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q383",
+    "trait": "Conscientiousness",
+    "scenario": "You are organizing a fundraising event for a charity.",
+    "question": "What is your primary focus when planning and executing the charity event?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Developing a highly structured and detailed event plan, meticulously managing logistics and ensuring every aspect is perfectly executed.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Creating a systematic and organized event framework, regularly monitoring progress and adjusting plans to ensure efficiency and success.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Establishing a general event outline, focusing on key elements while allowing for flexibility and spontaneous adjustments as needed.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Focusing on the overall atmosphere and purpose of the event, trusting in your ability to manage details spontaneously without strict planning.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q384",
+    "trait": "Conscientiousness",
+    "scenario": "You have set a goal to improve your time management skills.",
+    "question": "How do you approach improving your time management and productivity?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a strict time management system with detailed schedules, time-blocking, and rigorous tracking of your daily activities.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Implement a systematic approach to time management, using tools and techniques to plan, prioritize, and monitor your time effectively.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to be more mindful of your time and make small adjustments to your routine as needed, focusing on general improvements.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach time management casually, trusting in your general intention to be more efficient without adopting rigid systems or schedules.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q385",
+    "trait": "Agreeableness",
+    "scenario": "You are in a group project and a teammate expresses strong opinions that are different from yours.",
+    "question": "How do you respond to differing opinions within a team project?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Actively listen to and validate your teammate's opinions, seeking to find common ground and integrate different perspectives.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Try to understand their viewpoint and find a compromise or middle ground that respects everyone's opinions and contributions.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Assertively present your own viewpoint, aiming to persuade others that your perspective is the most logical and effective.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Remain neutral and avoid taking sides, focusing on completing your assigned tasks and minimizing personal involvement in opinion conflicts.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q386",
+    "trait": "Agreeableness",
+    "scenario": "You are giving feedback to a friend on a personal project they have been working on.",
+    "question": "How do you deliver feedback to a friend on their creative work?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Focus on offering positive and encouraging feedback, emphasizing their strengths and gently suggesting areas for improvement with kindness.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Provide constructive feedback in a supportive and sensitive manner, ensuring your friend feels valued and motivated to improve.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Offer direct and honest feedback, prioritizing accuracy and clarity even if it means pointing out flaws or weaknesses bluntly.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Avoid giving critical feedback and focus on general praise, wanting to encourage their efforts and maintain a positive relationship.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q387",
+    "trait": "Neuroticism",
+    "scenario": "You are starting a new job in a completely unfamiliar industry.",
+    "question": "What are your dominant feelings about starting a new job in an unknown field?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Feel intensely fearful and inadequate, doubting your ability to adapt and succeed in a completely new environment.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience significant anxiety and apprehension, worrying excessively about making mistakes and feeling out of your depth.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Feel a mix of nervousness and curiosity, viewing it as a challenging but exciting opportunity to learn and expand your horizons.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach it with a calm and confident mindset, focusing on your adaptability and resourcefulness to navigate the new challenges.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q388",
+    "trait": "Neuroticism",
+    "scenario": "You are facing a significant financial investment with potential risks and rewards.",
+    "question": "How do you typically react to financial decisions involving uncertainty?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Become highly anxious and risk-averse, tending to avoid investments that carry significant uncertainty or potential loss.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Experience significant worry and stress, feeling uneasy about the potential financial risks and struggling with decision-making.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Try to carefully weigh the potential risks and rewards, making a calculated decision based on thorough research and analysis.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Approach financial decisions with a balanced and rational perspective, accepting some level of risk and focusing on long-term gains.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q389",
+    "trait": "Openness",
+    "scenario": "You are choosing a form of exercise to incorporate into your routine.",
+    "question": "What type of physical activity appeals to you most for regular exercise?",
+    "options": [
+      {
+        "label": "A",
+        "text": "An unconventional or experimental fitness class that combines different disciplines and offers a novel physical experience.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "A dynamic and varied workout routine that incorporates diverse activities and challenges your physical limits in new ways.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A traditional and established form of exercise like jogging or swimming, focusing on consistency and proven methods.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A simple and accessible activity like walking or stretching, prioritizing ease and comfort in your exercise routine.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q390",
+    "trait": "Openness",
+    "scenario": "You are selecting a form of live entertainment to attend.",
+    "question": "What kind of live performance are you most interested in experiencing?",
+    "options": [
+      {
+        "label": "A",
+        "text": "An avant-garde theatrical performance or an experimental music concert that challenges conventional artistic forms and expectations.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "An innovative and immersive performance art piece that blends different genres and creates a unique and thought-provoking experience.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "A classic play or a well-established musical, appreciating traditional forms of performance and recognizable narratives.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "A simple and straightforward performance like a stand-up comedy show or a popular music concert, prioritizing easy enjoyment and relaxation.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q391",
+    "trait": "Machiavellianism",
+    "scenario": "You are in a group competition and realize that subtly influencing the judges' opinions could secure your win.",
+    "question": "How likely are you to subtly influence the judges to improve your chances of winning?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if influencing the judges is discreet and effectively enhances your chances of securing victory in the competition.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a strategic tactic to gain an edge and ensure you are favorably evaluated by the judges.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid influencing judges, believing in fair evaluation based on merits and performance, not external manipulation.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to attempt influencing judges, prioritizing integrity and fair competition over personal gain or victory.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q392",
+    "trait": "Machiavellianism",
+    "scenario": "You are managing a team and need to secure a promotion for yourself, potentially at the expense of a deserving team member.",
+    "question": "How likely are you to prioritize your own promotion over fairly advocating for your team members' advancement?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if securing the promotion is crucial for your career advancement, even if it means overshadowing a team member.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider prioritizing your promotion, if it’s a strategic move to advance your career and opportunities, balancing team advocacy.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Balance your personal ambition with fair advocacy for your team, aiming to support both your advancement and your team members’ growth.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Prioritize advocating for your team members' advancement, valuing their success and fair recognition over your own immediate promotion.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q393",
+    "trait": "Narcissism",
+    "scenario": "You are asked to lead a high-profile project that will bring significant public attention.",
+    "question": "What is your primary motivation for taking on a high-visibility leadership role?",
+    "options": [
+      {
+        "label": "A",
+        "text": "To gain public recognition and admiration for your leadership, enhancing your reputation and public image significantly.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "To showcase your exceptional leadership skills and strategic capabilities, ensuring your talents are prominently displayed and celebrated.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "To contribute to the project's success and guide the team towards achieving meaningful outcomes, focusing on collective achievement.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "To effectively manage the project and ensure its successful completion, prioritizing organizational goals and team performance over personal recognition.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q394",
+    "trait": "Narcissism",
+    "scenario": "You are in a team meeting and a colleague's idea is praised, while you believe your idea was superior but overlooked.",
+    "question": "How do you typically respond when your superior ideas are not recognized in a team setting?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Become frustrated and believe your superior intellect and insights are not being adequately valued or appreciated by the team.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Consider subtly re-emphasizing your idea, highlighting its merits and implicitly contrasting it with the colleague's praised idea.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Acknowledge the colleague's idea positively, focusing on collaborative team efforts and shared project goals.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Feel supportive of team collaboration and progress, regardless of whose idea is chosen, valuing collective success over personal recognition.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q395",
+    "trait": "Psychopathy",
+    "scenario": "You are in a competitive game and realize that subtly cheating could guarantee your victory with minimal risk of detection.",
+    "question": "How likely are you to subtly cheat if it secures your win and avoids getting caught?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if subtle cheating guarantees victory and the chances of being detected or penalized are practically nonexistent.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider subtle cheating, if it’s the most efficient way to ensure victory and avoid the negative consequences of losing.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid cheating, believing in fair play and honest competition as more important than winning at all costs.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to cheat, prioritizing integrity, sportsmanship, and ethical gameplay above the mere desire to win.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q396",
+    "trait": "Psychopathy",
+    "scenario": "You are in a position to take credit for a team success and can easily shift blame for any failures onto others.",
+    "question": "How likely are you to take credit for team successes and shift blame for failures to avoid personal accountability?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Highly likely, if taking credit enhances your reputation and shifting blame protects you from negative consequences and maintains a positive image.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Definitely consider it, if it’s a strategic move to maximize personal gain and minimize personal risk, securing advantages and avoiding repercussions.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Avoid taking undue credit or shifting blame, believing in shared success and collective accountability for team outcomes.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Absolutely refuse to take credit unfairly or shift blame, prioritizing honesty, ethical leadership, and shared responsibility within the team.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q397",
+    "trait": "Extraversion",
+    "scenario": "You are at a conference and have a choice between attending a lecture or a networking reception.",
+    "question": "How do you typically decide whether to attend a lecture or a networking event at a conference?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Prioritize networking events, seeing them as more valuable opportunities to connect with people and build relationships than lectures.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Lean towards networking receptions, viewing lectures as secondary to social interactions and professional connections.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Prefer attending lectures that are directly relevant to your work, using networking receptions for brief social interactions during breaks.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Focus primarily on attending lectures, seeing the conference as a learning opportunity and minimizing time spent on social networking.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q398",
+    "trait": "Extraversion",
+    "scenario": "You are planning a weekend getaway with your family.",
+    "question": "What type of weekend activities do you suggest for family time?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Visiting a bustling amusement park or a crowded festival, enjoying high-energy activities and shared excitement with crowds.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Attending a popular event or show that attracts large audiences, seeking dynamic and engaging social experiences as a family.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Engaging in quiet family activities at home, such as board games or movie nights, focusing on intimate interaction and relaxed bonding.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Spending a peaceful weekend at a secluded cabin or nature retreat, prioritizing solitude and relaxation away from social engagements as a family.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q399",
+    "trait": "Conscientiousness",
+    "scenario": "You are tasked with managing multiple projects simultaneously, each with tight deadlines.",
+    "question": "How do you approach managing multiple projects with overlapping deadlines?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Develop a highly structured multi-project plan, meticulously prioritizing tasks and allocating time to ensure each project is completed on time and to standard.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Implement a systematic project management approach, creating detailed schedules and regularly reviewing progress to ensure all projects stay on track.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Create a general framework for managing projects, focusing on key milestones and deadlines but allowing for flexibility in execution and prioritization.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Keep a broad overview of all projects, managing tasks as they become urgent, trusting in your ability to handle multiple demands without detailed planning.",
+        "trait_level": "low"
+      }
+    ]
+  },
+  {
+    "id": "q400",
+    "trait": "Conscientiousness",
+    "scenario": "You have made a resolution to improve your diet and eating habits.",
+    "question": "How do you ensure you stick to your dietary commitment and maintain healthy eating?",
+    "options": [
+      {
+        "label": "A",
+        "text": "Create a strict meal plan with detailed nutritional targets, meticulously tracking your food intake and ensuring adherence to your dietary rules.",
+        "trait_level": "high"
+      },
+      {
+        "label": "B",
+        "text": "Systematically plan your meals and groceries, setting clear dietary goals and monitoring your progress to maintain discipline and healthy eating.",
+        "trait_level": "high"
+      },
+      {
+        "label": "C",
+        "text": "Aim to eat healthier in general, making conscious choices to improve your diet when possible, without a rigid meal plan or tracking.",
+        "trait_level": "low"
+      },
+      {
+        "label": "D",
+        "text": "Eat more mindfully and intuitively, trusting in your general intention to eat healthier without following a strict dietary regime or schedule.",
+        "trait_level": "low"
+      }
+    ]
+  }
+]
