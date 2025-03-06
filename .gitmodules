@@ -1,0 +1,9 @@
+[submodule "ChimeraDatasets"]
+	path = ChimeraDatasets
+	url = https://github.com/viasky657/ChimeraDatasets.git
+[submodule "phi-4"]
+	path = phi-4
+	url = https://huggingface.co/microsoft/phi-4
+[submodule "smolagents"]
+	path = smolagents
+	url = https://github.com/huggingface/smolagents.git

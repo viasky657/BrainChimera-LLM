@@ -3300,11 +3300,14 @@ def run_manual_introspection_training(model, num_samples=400, save_checkpoints=T
 
 # --- Start of Audio, Image, videos, and .pdf embeddings Training ---
 
+#This is already done with fine-tuning the Phi-4 model. The model will stil need to be trained on the internvideo dataset though for video understanding. 
+#The only additional thing that needs to be added is the Continual backprobagation method to avoid catastrophic forgetting.
+
 # --- End of Audio, Image, videos, and .pdf embeddings Training ---
 
 # --- Start of Empathy and Negative Environmental Impact Avoidance ---
 
-# This is located in the MirrorNueronEmpathyReward.py and in the training loop in the main function below. 
+# This is located in the MirrorNueronEmpathyReward.py and in the training loop in the main function below. This is complete. 
 
 # --- End of Empathy and Negative Environmental Impact Avoidance ---
 

@@ -8,7 +8,7 @@ import json
 import uuid
 from collections import OrderedDict
 import numpy as np
-#import faiss - Replacing Faiss with Falcon and k-group klustering for quicker memory retrieval without losing much accuracy. 
+import faiss 
 from typing import Optional, List, Dict, Any, Tuple, Union
 import shutil
 import glob
@@ -17,13 +17,9 @@ import threading
 import math
 from concurrent.futures import ThreadPoolExecutor
 import warnings
-import falconn
-import lmdb
 import numpy as np
 import pickle
 from sklearn.cluster import MiniBatchKMeans
-
-#Need to pip install falconn, scikit-learn, lmdb, numpy for the Episodic Memory to function properly. 
 
 
 # Grok optimization for improving softmax and numeric stability in training
@@ -2353,6 +2349,7 @@ class EpisodicMemory(nn.Module):
         """
         Create a FAISS index optimized for billion-scale vector search.
         Uses IndexIDMap to enable selective deletion for better performance.
+        Incorporates optimized index types based on vector count.
         
         Args:
             embedding_dim: Dimension of the embeddings
@@ -2360,31 +2357,84 @@ class EpisodicMemory(nn.Module):
         Returns:
             FAISS index configured for billion-scale search
         """
-        # For billion-scale search, we use IVF (Inverted File Index) with flat quantization
-        # The number of centroids (nlist) should scale with sqrt(n) where n is the number of vectors
-        # For a billion vectors, ~30K-100K centroids is reasonable
-        nlist = 50000  # Number of centroids for billion-scale
+        # Adaptive index creation based on expected size
+        expected_size = min(self.max_active_memories, 10_000_000)
         
-        # Create a quantizer (the index that computes centroids)
-        quantizer = faiss.IndexFlatL2(embedding_dim)
+        # For small collections (under 1M vectors), HNSW often performs better
+        if expected_size < 1_000_000:
+            # HNSW (Hierarchical Navigable Small World) graph-based index
+            # M = number of connections per layer (higher = better recall, more memory)
+            # efConstruction = build-time exploration factor (higher = better quality, slower build)
+            M = 16
+            efConstruction = 100
+            base_index = faiss.IndexHNSWFlat(embedding_dim, M, faiss.METRIC_L2)
+            base_index.hnsw.efConstruction = efConstruction
+            base_index.hnsw.efSearch = 64  # Search-time exploration factor
+            
+            # Wrap with IndexIDMap
+            index = faiss.IndexIDMap(base_index)
+            
+            # No training needed for HNSW
+            self.index_type = "hnsw"
+            
+        # For medium collections (1M-10M), IVF with Product Quantization is efficient
+        elif expected_size < 10_000_000:
+            # Number of centroids scales with sqrt(n)
+            nlist = max(4096, int(4 * math.sqrt(expected_size)))
+            
+            # Product Quantization parameters
+            # For 768-dim vectors, 32 subquantizers with 8 bits each works well
+            m = min(64, embedding_dim // 12)  # Number of subquantizers
+            nbits = 8  # Bits per subquantizer (usually 8)
+            
+            # Create quantizer
+            quantizer = faiss.IndexFlatL2(embedding_dim)
+            
+            # Create IVF-PQ index
+            base_index = faiss.IndexIVFPQ(quantizer, embedding_dim, nlist, m, nbits)
+            
+            # Set search parameters
+            base_index.nprobe = min(256, nlist // 4)  # Number of clusters to visit during search
+            
+            # Wrap with IndexIDMap
+            index = faiss.IndexIDMap(base_index)
+            
+            # Initialize with empty training set
+            base_index.is_trained = False
+            self.index_type = "ivfpq"
+            
+        # For large collections (10M+), use IVF with flat storage
+        else:
+            # For billion-scale, use more centroids
+            nlist = min(100000, max(50000, int(4 * math.sqrt(expected_size))))
+            
+            # Create quantizer
+            quantizer = faiss.IndexFlatL2(embedding_dim)
+            
+            # Create IVF index
+            base_index = faiss.IndexIVFFlat(quantizer, embedding_dim, nlist, faiss.METRIC_L2)
+            
+            # Set search parameters - adaptive to index size
+            base_index.nprobe = min(1024, max(256, nlist // 8))
+            
+            # Wrap with IndexIDMap
+            index = faiss.IndexIDMap(base_index)
+            
+            # Initialize with empty training set
+            base_index.is_trained = False
+            self.index_type = "ivfflat"
         
-        # Create the full index: IVF with flat storage
-        base_index = faiss.IndexIVFFlat(quantizer, embedding_dim, nlist, faiss.METRIC_L2)
-        
-        # Wrap with IndexIDMap to enable selective deletion by ID
-        # This allows us to remove vectors without rebuilding the entire index
-        index = faiss.IndexIDMap(base_index)
-        
-        # To improve search speed at the cost of some accuracy, we can set nprobe
-        # nprobe is the number of nearest centroids to search
-        base_index.nprobe = 256
-        
-        # Initialize with an empty training set (will be trained incrementally)
-        # Note: For production, we would want to train this on a representative dataset
-        base_index.is_trained = False
-        
-        # Store memory_id to faiss_id mapping for future lookup
+        # Store memory_id to faiss_id mapping
         self.memory_id_to_faiss_id = {}
+        
+        # Create metadata for index optimization
+        self.index_metadata = {
+            "created_time": time.time(),
+            "last_optimized": time.time(),
+            "vector_count": 0,
+            "type": self.index_type,
+            "embedding_dim": embedding_dim
+        }
         
         return index
     
@@ -3038,14 +3088,15 @@ class EpisodicMemory(nn.Module):
             
             return None
     
-    def retrieve_relevant_memories(self, 
-                                  query_embedding: torch.Tensor, 
+    def retrieve_relevant_memories(self,
+                                  query_embedding: torch.Tensor,
                                   top_k: int = 5,
                                   use_neural: bool = True,
                                   search_archive: bool = True,
                                   time_period: str = None) -> List[MemoryItem]:
         """
-        Retrieve memories relevant to the query embedding.
+        Retrieve memories relevant to the query embedding with optimized FAISS search.
+        Optimized implementation for faster memory retrieval with better caching and prioritization.
         
         Args:
             query_embedding: Query embedding tensor
@@ -3057,8 +3108,66 @@ class EpisodicMemory(nn.Module):
         Returns:
             List of relevant memory items
         """
-        start_time = time.time()
+        query_start_time = time.time()
         
+        # Enhanced caching system with better fingerprinting
+        if not hasattr(self, 'query_cache'):
+            self.query_cache = {}
+            
+        # Create an effective fingerprint of the query for cache lookup
+        query_arr = query_embedding.detach().cpu().numpy().flatten()
+        if len(query_arr) > 30:
+            # Select distributed points throughout the vector for better fingerprinting
+            # This gives better cache hit rates while keeping the key small
+            n_points = 30
+            indices = np.linspace(0, len(query_arr)-1, n_points).astype(int)
+            fingerprint = tuple(query_arr[indices].tolist())
+        else:
+            fingerprint = tuple(query_arr.tolist())
+            
+        # Create a composite cache key that includes all relevant parameters
+        cache_key = (hash(fingerprint), top_k, use_neural, search_archive,
+                     time_period if time_period else 'all')
+        
+        # Check if we have a cached result with adaptive TTL
+        if cache_key in self.query_cache:
+            cached_result, cache_timestamp, hit_count = self.query_cache[cache_key]
+            
+            # Determine cache TTL based on hit count and search settings
+            # More frequently accessed results should stay in cache longer
+            base_ttl = 60  # Base TTL of 60 seconds
+            
+            # Scale TTL based on hit count (up to 5x for frequently accessed queries)
+            hit_factor = min(5, 1 + hit_count / 5)
+            
+            # Archive searches can be cached longer than active-only searches
+            archive_factor = 2.0 if search_archive else 1.0
+            
+            # Time period specific searches can be cached longer
+            period_factor = 1.5 if time_period else 1.0
+            
+            # Calculate final TTL
+            adjusted_ttl = base_ttl * hit_factor * archive_factor * period_factor
+            
+            # Use cache if it's still fresh
+            if time.time() - cache_timestamp < adjusted_ttl:
+                # Increment hit count for this result
+                self.query_cache[cache_key] = (cached_result, cache_timestamp, hit_count + 1)
+                
+                # Mark memories as accessed
+                for memory in cached_result:
+                    memory.mark_accessed()
+                
+                # Update stats with cache hit timing
+                if hasattr(self, 'search_stats'):
+                    # Record a very fast search time for cache hits
+                    cache_hit_time = time.time() - query_start_time
+                    self.search_stats.append(cache_hit_time)
+                    self.search_stats = self.search_stats[-100:]  # Keep last 100 searches
+                
+                return cached_result
+        
+        # Cache miss - need to perform the search
         with self.memory_lock:
             # Ensure query is a tensor
             if not isinstance(query_embedding, torch.Tensor):
@@ -3067,76 +3176,310 @@ class EpisodicMemory(nn.Module):
             # Normalize for consistent similarity
             query_embedding = F.normalize(query_embedding.float(), p=2, dim=-1)
             
+            # Initialize results array for active memory search
             results = []
             
+            # Adaptive search parameters based on query importance estimation
+            query_importance = 0.5  # Default medium importance
+            
+            # Memory allocation planning - determine how to allocate top_k slots
+            # between active, neural, and archive memories
+            active_memory_count = len(self.memories)
+            
             # Get relevant memories from active memory
-            if len(self.memories) > 0:
+            if active_memory_count > 0:
+                # Determine adaptive k for active memory search
+                # This will scale based on number of results requested and
+                # relative size of active vs. archived memories
+                active_k = min(
+                    active_memory_count,
+                    # Request more if we have few active memories proportionally
+                    max(1, int(top_k * (1.0 + 0.5 * (1 - active_memory_count / self.max_active_memories))))
+                )
+                
                 if self.use_faiss:
-                    # Use FAISS for efficient similarity search
+                    # Use FAISS for efficient similarity search with optimized parameters
                     query_np = query_embedding.detach().cpu().numpy().reshape(1, -1).astype(np.float32)
-                    distances, indices = self.index.search(query_np, min(top_k, len(self.memories)))
                     
-                    # Get memory items from indices
-                    active_results = [self.memories[idx] for idx in indices[0] if idx >= 0 and idx < len(self.memories)]
+                    # Batch search configuration based on index type and size
+                    if hasattr(self, 'index_type'):
+                        # Index type specific optimizations
+                        if self.index_type == 'ivfflat' or self.index_type == 'ivfpq':
+                            # Store original nprobe to restore later
+                            original_nprobe = None
+                            if hasattr(self.index, 'nprobe'):
+                                original_nprobe = self.index.nprobe
+                                
+                                # Calculate adaptive nprobe based on index size and query importance
+                                vector_count = max(1, self.index.ntotal)
+                                # Base nprobe proportional to log of vector count
+                                base_nprobe = int(8 * math.log10(vector_count + 1))
+                                # Scale by importance
+                                nprobe = min(256, max(16, int(base_nprobe * (1.0 + query_importance))))
+                                
+                                self.index.nprobe = nprobe
+                            
+                            # Search for active_k * 2 to get more candidates for quality selection
+                            distances, indices = self.index.search(query_np, min(active_k * 2, active_memory_count))
+                            
+                            # Restore original nprobe
+                            if original_nprobe is not None:
+                                self.index.nprobe = original_nprobe
+                                
+                            # Estimate query importance based on distance distribution
+                            if distances.size > 1 and distances[0].size > 1:
+                                # Calculate coefficient of variation (normalized std)
+                                std = np.std(distances[0])
+                                mean = np.mean(distances[0])
+                                if mean > 0:
+                                    cv = std / mean
+                                    # Map to importance score - more variance = higher importance
+                                    query_importance = min(1.0, max(0.2, cv * 2))
+                        else:
+                            # For HNSW and flat indices, standard search is optimized already
+                            # but we still adapt k based on query importance
+                            distances, indices = self.index.search(
+                                query_np, min(active_k, active_memory_count))
+                    else:
+                        # Fallback for unknown index types
+                        distances, indices = self.index.search(
+                            query_np, min(active_k, active_memory_count))
+                    
+                    # Process results with smart filtering
+                    valid_indices = []
+                    
+                    # Check if we have valid indices
+                    if indices.size > 0 and indices[0].size > 0:
+                        # Smart index validation with error prevention
+                        valid_indices = [
+                            idx for idx in indices[0]
+                            if idx >= 0 and idx < active_memory_count
+                        ]
+                    
+                    # Batch load memories with distance scores for efficient processing
+                    active_results = []
+                    
+                    # Use memory map for direct index access instead of searching
+                    memory_by_index = {}
+                    if hasattr(self, 'memory_index_map'):
+                        memory_by_index = self.memory_index_map
+                    else:
+                        # Initialize memory index map if needed
+                        self.memory_index_map = {i: memory for i, memory in enumerate(self.memories)}
+                        memory_by_index = self.memory_index_map
+                    
+                    # Batch process valid indices
+                    for i, idx in enumerate(valid_indices):
+                        # Use index map for O(1) lookups instead of linear search
+                        if idx in memory_by_index:
+                            memory = memory_by_index[idx]
+                            # Store distance for sorting
+                            if i < len(distances[0]):
+                                memory.metadata['_tmp_distance'] = float(distances[0][i])
+                            active_results.append(memory)
                 else:
-                    # Calculate similarity with all memories
-                    similarities = torch.matmul(query_embedding, self.memory_embeddings.t()).squeeze()
+                    # Non-FAISS similarity calculation with optimized matrix operations
+                    # Adaptive batch size based on available memory
+                    if active_memory_count > 10000:
+                        # For very large memory sets, use batched processing
+                        batch_size = 10000
+                        all_similarities = []
+                        
+                        for i in range(0, active_memory_count, batch_size):
+                            # Process in manageable chunks
+                            end_idx = min(i + batch_size, active_memory_count)
+                            batch_embeddings = self.memory_embeddings[i:end_idx]
+                            
+                            # Optimize matrix multiplication for this batch
+                            batch_similarities = torch.matmul(
+                                query_embedding, batch_embeddings.t()).squeeze()
+                            all_similarities.append(batch_similarities)
+                        
+                        # Concatenate all batch results
+                        if all_similarities:
+                            similarities = torch.cat(all_similarities)
+                        else:
+                            similarities = torch.tensor([])
+                    else:
+                        # For smaller sets, process in one go
+                        similarities = torch.matmul(
+                            query_embedding, self.memory_embeddings.t()).squeeze()
                     
-                    # Use StableMax for numerical stability when choosing top indices
+                    # Handle different tensor shapes for proper processing
                     if len(similarities.shape) == 0:  # Single value
                         top_indices = [0] if similarities.item() > 0 else []
                     else:
-                        # Apply stable softmax to normalize similarities
-                        norm_similarities = stable_softmax(similarities, dim=0, alpha=1.0)
+                        # Use StableMax with optimized parameters for better numerical stability
+                        norm_similarities = stable_softmax(
+                            similarities, dim=0, alpha=1.0, stability_factor=1e-6)
                         
-                        # Get top k indices
-                        top_values, top_indices = torch.topk(norm_similarities, min(top_k, len(self.memories)))
+                        # Get more candidates than needed for better filtering
+                        top_values, top_indices = torch.topk(
+                            norm_similarities, min(active_k * 2, active_memory_count))
                         
-                        # Filter out very low similarities
-                        threshold = 1.0 / len(self.memories) * 0.1  # Dynamic threshold based on number of memories
-                        top_indices = [idx.item() for idx, val in zip(top_indices, top_values) if val.item() > threshold]
+                        # Adaptive filtering with contrast enhancement
+                        # Calculate dynamic threshold based on similarity distribution
+                        if len(top_values) > 1:
+                            mean_sim = torch.mean(top_values).item()
+                            std_sim = torch.std(top_values).item()
+                            # Adaptive threshold based on mean and standard deviation
+                            # For high-contrast results (high std), we can be more selective
+                            min_threshold = 1.0 / active_memory_count * 0.1
+                            adaptive_threshold = max(
+                                min_threshold,
+                                mean_sim - (0.5 + query_importance) * std_sim
+                            )
+                            
+                            # Filter based on the adaptive threshold
+                            top_indices = [
+                                idx.item() for idx, val in zip(top_indices, top_values)
+                                if val.item() > adaptive_threshold
+                            ]
+                            
+                            # Update query importance based on similarity distribution
+                            # Higher contrast (std/mean) suggests more important query
+                            if mean_sim > 0:
+                                query_importance = min(
+                                    1.0, max(0.2, std_sim / mean_sim * 2))
                     
-                    # Get memory items from indices
-                    active_results = [self.memories[idx] for idx in top_indices]
+                    # Get memory items from filtered indices
+                    active_results = [self.memories[idx] for idx in top_indices[:active_k]]
                 
                 # Mark memories as accessed
                 for memory in active_results:
                     memory.mark_accessed()
                 
+                # Add to results
                 results.extend(active_results)
             
-            # Use neural memory if requested
+            # Neural memory processing with device handling optimization
             if use_neural:
-                # Get neural memory output
+                # Get neural memory device
                 device = next(self.neural_memory.parameters()).device
-                query_device = query_embedding.to(device)
-                neural_output = self.neural_memory(query_device.unsqueeze(0)).squeeze(0)
                 
-                # Create a virtual memory item for the neural output
+                # Move query to device efficiently
+                query_device = query_embedding.to(device)
+                
+                # Process with neural memory - use no_grad for inference
+                with torch.no_grad():
+                    neural_output = self.neural_memory(query_device.unsqueeze(0)).squeeze(0)
+                
+                # Create virtual memory item with proper metadata
                 neural_memory = MemoryItem(
                     embedding=neural_output.detach().cpu(),
                     timestamp=time.time(),
                     surprise_level=0.5,  # Middle surprise level
-                    metadata={'source': 'neural_memory'}
+                    metadata={
+                        'source': 'neural_memory',
+                        'query_importance': query_importance
+                    }
                 )
                 
                 results.append(neural_memory)
             
-            # Search archive if requested and we still need more results
-            if search_archive and len(results) < top_k:
-                archive_results = self._search_archive(query_embedding, top_k - len(results), time_period)
+            # Archive search with dynamic allocation based on result quality so far
+            if search_archive and ((len(results) < top_k) or (query_importance > 0.7)):
+                # Calculate remaining slots plus some extra for quality selection
+                # More important queries justify searching for more candidates
+                remaining_k = max(1, top_k - len(results))
+                archive_k = remaining_k * (1 + int(query_importance * 2))
+                
+                # Get archive results with efficient search
+                archive_results = self._search_archive(
+                    query_embedding, archive_k, time_period)
+                
+                # Add to results
                 results.extend(archive_results)
             
-            # Sort by relevance (dot product similarity)
-            results.sort(key=lambda memory: torch.dot(query_embedding, memory.embedding).item(), reverse=True)
+            # Final sorting and selection of best results
+            if results:
+                # Check for distance scores for optimized sorting
+                if len(results) > 0 and all(
+                    hasattr(m, 'metadata') and
+                    isinstance(m.metadata, dict) and
+                    '_tmp_distance' in m.metadata
+                    for m in results
+                ):
+                    # Use distance-based sorting (faster and more stable)
+                    results.sort(key=lambda memory: memory.metadata.get('_tmp_distance', float('inf')))
+                    
+                    # Clean up temporary distance scores
+                    for memory in results:
+                        if '_tmp_distance' in memory.metadata:
+                            del memory.metadata['_tmp_distance']
+                else:
+                    # Use dot product similarity for sorting
+                    # This is more expensive but necessary as fallback
+                    results.sort(
+                        key=lambda memory: torch.dot(query_embedding, memory.embedding).item(),
+                        reverse=True
+                    )
             
-            return results
+            # Final selection of top_k results
+            final_results = results[:top_k]
+            
+            # Cache the results with hit count tracking
+            if cache_key is not None:
+                self.query_cache[cache_key] = (final_results, time.time(), 1)  # Initial hit count = 1
+                
+                # Smart cache management with importance-based retention
+                if len(self.query_cache) > 1000:
+                    # Get all cache entries
+                    cache_items = list(self.query_cache.items())
+                    
+                    # Calculate scores for each cache entry based on multiple factors:
+                    # 1. Recency (newer is better)
+                    # 2. Hit count (more hits is better)
+                    # 3. Random factor (prevent deterministic eviction)
+                    import random
+                    current_time = time.time()
+                    
+                    def cache_score(cache_entry):
+                        key, (_, timestamp, hits) = cache_entry
+                        age_factor = 1.0 / (1.0 + (current_time - timestamp) / 300)  # Age in 5-minute units
+                        hit_factor = min(5, 1 + hits / 3)  # Cap hit importance at 5x
+                        random_factor = 0.9 + 0.2 * random.random()  # 0.9-1.1 random factor
+                        return age_factor * hit_factor * random_factor
+                    
+                    # Sort by score (ascending, so lowest scores are removed)
+                    cache_items.sort(key=cache_score)
+                    
+                    # Remove the lowest-scoring 20% of entries
+                    remove_count = len(cache_items) // 5
+                    for k, _ in cache_items[:remove_count]:
+                        if k in self.query_cache:
+                            del self.query_cache[k]
+            
+            # Track query performance
+            query_time = time.time() - query_start_time
+            if hasattr(self, 'search_stats'):
+                self.search_stats.append(query_time)
+                self.search_stats = self.search_stats[-100:]  # Keep last 100 searches
+            
+            # Record statistics for self-optimization
+            if query_time > 0.1:  # Only track meaningful timings
+                if not hasattr(self, 'query_time_distribution'):
+                    self.query_time_distribution = []
+                self.query_time_distribution.append({
+                    'time': query_time,
+                    'top_k': top_k,
+                    'active_count': active_memory_count,
+                    'archive': search_archive,
+                    'use_neural': use_neural,
+                    'importance': query_importance,
+                    'timestamp': time.time()
+                })
+                # Keep limited history
+                self.query_time_distribution = self.query_time_distribution[-500:]
+            
+            return final_results
     
-    def _search_archive(self, query_embedding: torch.Tensor, 
-                       top_k: int, 
-                       time_period: str = None) -> List[MemoryItem]:
+    def _search_archive(self, query_embedding: torch.Tensor,
+                        top_k: int,
+                        time_period: str = None) -> List[MemoryItem]:
         """
-        Search archived memories for relevant items.
+        Search archived memories with enhanced parallel processing and optimized FAISS parameters.
+        Optimized version for faster memory retrieval without changing FAISS.
         
         Args:
             query_embedding: Query embedding
@@ -3146,56 +3489,731 @@ class EpisodicMemory(nn.Module):
         Returns:
             List of relevant archived memory items
         """
+        # Start timer for performance tracking
+        search_start_time = time.time()
+        
+        # Improved caching strategy with better keys
+        if not hasattr(self, 'archive_search_cache'):
+            self.archive_search_cache = {}
+            
+        # Create a more effective cache key - include top_k in the key for better precision
+        # Use a smarter fingerprinting approach for the query vector
+        query_arr = query_embedding.detach().cpu().numpy().flatten()
+        if len(query_arr) > 20:
+            # Use a mix of beginning, middle and end elements for better fingerprinting
+            # This provides better uniqueness while keeping the key size small
+            fingerprint_size = 7
+            start_elements = query_arr[:fingerprint_size].tolist()
+            mid_idx = len(query_arr) // 2
+            mid_elements = query_arr[mid_idx:mid_idx+fingerprint_size].tolist()
+            end_elements = query_arr[-fingerprint_size:].tolist()
+            vector_hash = hash(tuple(start_elements + mid_elements + end_elements))
+        else:
+            # If the vector is small, use the whole thing
+            vector_hash = hash(tuple(query_arr.tolist()))
+            
+        # Create composite cache key with all relevant factors
+        if time_period:
+            cache_key = (vector_hash, time_period, top_k)
+        else:
+            cache_key = (vector_hash, top_k)
+        
+        # Check for cache hit - use dynamic TTL based on time_period
+        # Recent periods should have shorter TTLs than older periods
+        if cache_key in self.archive_search_cache:
+            cached_result, cache_timestamp = self.archive_search_cache[cache_key]
+            # Use adaptive cache TTL - more recent periods expire faster
+            # because they're more likely to change
+            if time_period:
+                # Extract year from period (format: YYYY_MM)
+                try:
+                    year = int(time_period.split("_")[0])
+                    current_year = datetime.datetime.now().year
+                    years_old = max(0, current_year - year)
+                    
+                    # Calculate TTL based on age - older periods can be cached longer
+                    # Recent period: 30 seconds, 1-year-old: 2 minutes, 10-years-old: 20 minutes
+                    ttl = min(1200, max(30, years_old * 120))  # Between 30s and 20min
+                except (ValueError, IndexError):
+                    ttl = 120  # Default 2 minutes if period format is unexpected
+            else:
+                ttl = 120  # Default 2 minutes for general searches
+                
+            if time.time() - cache_timestamp < ttl:
+                return cached_result
+        
+        # Initialize result containers
         results = []
+        
+        # Ensure proper shape for FAISS
+        if query_embedding.dim() > 1:
+            query_embedding = query_embedding.squeeze(0)
         query_np = query_embedding.detach().cpu().numpy().reshape(1, -1).astype(np.float32)
         
-        # Determine which time periods to search
-        if time_period:
-            # Search just this time period
-            time_periods = [time_period]
-        else:
-            # Search all time periods, or most recent if too many
-            time_periods = list(self.archive_indexes.keys())
-            if len(time_periods) > 10:
-                # If more than 10 time periods, focus on most recent
-                time_periods.sort(reverse=True)
-                time_periods = time_periods[:10]
+        # Get time periods to search using our optimized method
+        time_periods = self._select_archive_periods(time_period, top_k)
         
-        # Search each time period
-        for period in time_periods:
-            if period in self.archive_indexes:
+        # Estimate query importance for adaptive search parameters
+        # More important queries justify more thorough (but slower) searches
+        query_importance = 0.5  # Default medium importance
+        
+        # If we have active memories, we can estimate importance by
+        # comparing to the average active memory - more different = more important
+        if len(self.memories) > 0 and self.memory_embeddings.shape[0] > 0:
+            # Get average distance to active memories (rough approximation)
+            sample_size = min(100, len(self.memories))
+            if sample_size > 0:
+                sample_idx = np.linspace(0, len(self.memories)-1, sample_size).astype(int)
+                sample_embeddings = self.memory_embeddings[sample_idx]
+                distances = torch.norm(sample_embeddings - query_embedding.unsqueeze(0), dim=1)
+                avg_distance = torch.mean(distances).item()
+                
+                # Normalize to 0-1 range where smaller distance = higher importance
+                # Scale with sigmoid for better distribution
+                norm_distance = 1.0 / (1.0 + avg_distance)
+                query_importance = min(1.0, max(0.2, norm_distance))
+        
+        # Create an empty list for collecting memory references
+        relevant_memories = []
+        
+        # Split time periods into priority tiers for more efficient processing
+        # High priority (most recent periods) - search thoroughly
+        # Medium priority - search with standard parameters
+        # Low priority (oldest periods) - search with minimal parameters
+        if len(time_periods) <= 3:
+            # For few periods, all are high priority
+            high_priority_periods = time_periods
+            medium_priority_periods = []
+            low_priority_periods = []
+        else:
+            # For many periods, distribute with exponential decay priority
+            # More focus on recent periods for better search relevance
+            high_count = min(3, max(1, int(len(time_periods) * 0.2)))
+            medium_count = min(len(time_periods) - high_count,
+                               max(2, int(len(time_periods) * 0.3)))
+            
+            high_priority_periods = time_periods[:high_count]
+            medium_priority_periods = time_periods[high_count:high_count+medium_count]
+            low_priority_periods = time_periods[high_count+medium_count:]
+        
+        # Parallel processing for time periods if thread pool available
+        if self.multithread_operations and self.thread_pool:
+            # Enhanced period search function with adaptive parameters
+            def search_period(period, priority_level, query_importance):
+                if period not in self.archive_indexes:
+                    return []
+                
                 index = self.archive_indexes[period]
-                
-                # Skip if this index is empty
                 if index.ntotal == 0:
-                    continue
+                    return []
                 
-                # Search this index
+                period_results = []
+                period_dir = os.path.join(self.archive_path, period)
+                id_mapping_file = os.path.join(period_dir, "id_mapping.json")
+                
+                # Check for cached ID mapping first
+                id_mapping_cache_key = f"id_mapping_{period}"
+                if hasattr(self, 'id_mapping_cache') and id_mapping_cache_key in self.id_mapping_cache:
+                    id_mapping = self.id_mapping_cache[id_mapping_cache_key]
+                else:
+                    # Load ID mapping if available
+                    id_mapping = {}
+                    if os.path.exists(id_mapping_file):
+                        try:
+                            with open(id_mapping_file, 'r') as f:
+                                id_mapping = json.load(f)
+                                
+                            # Cache the mapping for future use
+                            if not hasattr(self, 'id_mapping_cache'):
+                                self.id_mapping_cache = {}
+                            self.id_mapping_cache[id_mapping_cache_key] = id_mapping
+                            
+                            # Limit cache size
+                            if len(self.id_mapping_cache) > 500:
+                                # Remove 100 random entries to prevent excessive growth
+                                keys_to_remove = list(self.id_mapping_cache.keys())[:100]
+                                for key in keys_to_remove:
+                                    if key in self.id_mapping_cache:
+                                        del self.id_mapping_cache[key]
+                                        
+                        except Exception:
+                            id_mapping = {}
+                
+                # Search with adaptive parameters based on priority and importance
                 try:
-                    distances, indices = index.search(query_np, min(top_k, index.ntotal))
+                    # Adjust k and nprobe based on priority level and query importance
+                    # Higher priority periods and more important queries get more resources
+                    if priority_level == "high":
+                        # For high priority periods, search more thoroughly
+                        recency_factor = 2.0
+                        k_search = min(int(top_k * recency_factor * (1.0 + query_importance)), index.ntotal)
+                        nprobe_factor = 2.0
+                    elif priority_level == "medium":
+                        # For medium priority, use standard parameters
+                        recency_factor = 1.5
+                        k_search = min(int(top_k * recency_factor), index.ntotal)
+                        nprobe_factor = 1.0
+                    else:  # low priority
+                        # For low priority (old periods), use minimal parameters
+                        recency_factor = 1.0
+                        k_search = min(top_k, index.ntotal)
+                        nprobe_factor = 0.5
                     
-                    # For each index, get the memory ID
-                    # Note: This requires a mapping from FAISS index position to memory ID
-                    # For this example, we'll assume sequential addition and use glob to get IDs
-                    period_dir = os.path.join(self.archive_path, period)
-                    memory_files = glob.glob(os.path.join(period_dir, "*.pt"))
-                    memory_ids = [os.path.basename(f).split('.')[0] for f in memory_files]
+                    # Ensure k_search is reasonable
+                    k_search = max(1, min(k_search, index.ntotal, 100))
                     
-                    if indices.shape[1] > 0 and len(memory_ids) > 0:
-                        # Get valid indices (some might be -1 if not enough results)
-                        valid_indices = [idx for idx in indices[0] if idx >= 0 and idx < len(memory_ids)]
+                    # Use dynamic nprobe for IVF indexes with adaptive sizing
+                    if hasattr(index, 'nprobe'):
+                        original_nprobe = index.nprobe
+                        # Scale nprobe based on index size, priority, and query importance
+                        # Higher values give better recall but slower performance
+                        base_nprobe = int(math.sqrt(index.ntotal))
+                        adaptive_nprobe = max(8, min(256, int(base_nprobe * nprobe_factor * (1.0 + query_importance))))
+                        index.nprobe = adaptive_nprobe
                         
-                        # Get memory IDs from indices
-                        for idx in valid_indices:
-                            if idx < len(memory_ids):
-                                memory_id = memory_ids[idx]
-                                memory = self.retrieve_memory(memory_id)
+                        # Perform search
+                        distances, indices = index.search(query_np, k_search)
+                        
+                        # Restore original nprobe
+                        index.nprobe = original_nprobe
+                    else:
+                        # Regular search for non-IVF indexes
+                        distances, indices = index.search(query_np, k_search)
+                    
+                    # Process results with batch lookup for better performance
+                    if indices.shape[1] > 0 and indices[0][0] >= 0:
+                        # If we have ID mapping, use it for faster lookup
+                        if id_mapping:
+                            # Process in batch for better performance
+                            valid_indices = [(idx_pos, int(idx)) for idx_pos, idx in enumerate(indices[0])
+                                           if idx >= 0 and str(int(idx)) in id_mapping]
+                            
+                            # Batch collect results
+                            for idx_pos, idx in valid_indices:
+                                memory_id = id_mapping[str(idx)]
+                                dist = float(distances[0][idx_pos])
+                                
+                                # Only include if distance is reasonable
+                                # This filters out very poor matches early
+                                if dist < 100.0:  # Adjust threshold as needed
+                                    period_results.append((memory_id, dist, period))
+                        else:
+                            # File-based lookup as fallback
+                            # Cache memory IDs for this period if not already cached
+                            memory_ids_cache_key = f"memory_ids_{period}"
+                            if hasattr(self, 'memory_ids_cache') and memory_ids_cache_key in self.memory_ids_cache:
+                                memory_ids = self.memory_ids_cache[memory_ids_cache_key]
+                            else:
+                                # Optimize file listing with directed glob and efficient path handling
+                                memory_files = glob.glob(os.path.join(period_dir, "*.pt"))
+                                memory_ids = [os.path.splitext(os.path.basename(f))[0] for f in memory_files]
+                                
+                                # Cache the IDs
+                                if not hasattr(self, 'memory_ids_cache'):
+                                    self.memory_ids_cache = {}
+                                self.memory_ids_cache[memory_ids_cache_key] = memory_ids
+                                
+                                # Limit cache size
+                                if len(self.memory_ids_cache) > 500:
+                                    keys_to_remove = list(self.memory_ids_cache.keys())[:100]
+                                    for key in keys_to_remove:
+                                        if key in self.memory_ids_cache:
+                                            del self.memory_ids_cache[key]
+                            
+                            if memory_ids:
+                                valid_indices = [(idx_pos, idx) for idx_pos, idx in enumerate(indices[0])
+                                               if idx >= 0 and idx < len(memory_ids)]
+                                
+                                for idx_pos, idx in valid_indices:
+                                    memory_id = memory_ids[idx]
+                                    dist = float(distances[0][idx_pos])
+                                    
+                                    # Only include if distance is reasonable
+                                    if dist < 100.0:  # Adjust threshold as needed
+                                        period_results.append((memory_id, dist, period))
+                    
+                except Exception as e:
+                    print(f"Error searching archive for period {period}: {e}")
+                
+                return period_results
+            
+            # Execute searches in parallel with prioritization
+            # Process high priority periods first, then medium, then low
+            futures = []
+            
+            # High priority period searches
+            for period in high_priority_periods:
+                futures.append(self.thread_pool.submit(
+                    search_period, period, "high", query_importance))
+            
+            # Medium priority period searches
+            for period in medium_priority_periods:
+                futures.append(self.thread_pool.submit(
+                    search_period, period, "medium", query_importance))
+            
+            # Low priority period searches
+            for period in low_priority_periods:
+                futures.append(self.thread_pool.submit(
+                    search_period, period, "low", query_importance))
+            
+            # Collect and merge results with early stopping
+            # Process high priority futures first to get the best results quickly
+            # This enables early termination if we find enough good results
+            memory_count = 0
+            cutoff_reached = False
+            
+            # First collect high priority results
+            high_futures = futures[:len(high_priority_periods)]
+            for future in high_futures:
+                if cutoff_reached:
+                    break
+                    
+                period_results = future.result()
+                relevant_memories.extend(period_results)
+                memory_count += len(period_results)
+                
+                # If we already have enough high-quality results, stop early
+                if memory_count >= top_k * 2 and query_importance < 0.7:
+                    cutoff_reached = True
+                    break
+            
+            # Continue with medium priority if needed
+            if not cutoff_reached:
+                med_futures = futures[len(high_priority_periods):len(high_priority_periods)+len(medium_priority_periods)]
+                for future in med_futures:
+                    if cutoff_reached:
+                        break
+                        
+                    period_results = future.result()
+                    relevant_memories.extend(period_results)
+                    memory_count += len(period_results)
+                    
+                    # Check for early stop with medium priority periods
+                    if memory_count >= top_k * 3:
+                        cutoff_reached = True
+                        break
+                        
+            # Finally low priority if still needed
+            if not cutoff_reached:
+                low_futures = futures[len(high_priority_periods)+len(medium_priority_periods):]
+                for future in low_futures:
+                    period_results = future.result()
+                    relevant_memories.extend(period_results)
+                    memory_count += len(period_results)
+                    
+                    # Check for final cutoff
+                    if memory_count >= top_k * 5:
+                        break
+        else:
+            # Sequential processing fallback with priority-based iteration
+            # Process periods in order of priority for better early results
+            for priority_level, periods in [
+                ("high", high_priority_periods),
+                ("medium", medium_priority_periods),
+                ("low", low_priority_periods)
+            ]:
+                for period in periods:
+                    if period not in self.archive_indexes:
+                        continue
+                    
+                    index = self.archive_indexes[period]
+                    if index.ntotal == 0:
+                        continue
+                    
+                    # Sequential search with adaptive parameters
+                    period_dir = os.path.join(self.archive_path, period)
+                    id_mapping_file = os.path.join(period_dir, "id_mapping.json")
+                    
+                    # Load ID mapping
+                    id_mapping = {}
+                    if os.path.exists(id_mapping_file):
+                        try:
+                            with open(id_mapping_file, 'r') as f:
+                                id_mapping = json.load(f)
+                        except Exception:
+                            id_mapping = {}
+                    
+                    # Adjust search parameters based on priority level
+                    try:
+                        if priority_level == "high":
+                            k_search = min(top_k * 2, index.ntotal)
+                            nprobe_factor = 2.0
+                        elif priority_level == "medium":
+                            k_search = min(top_k, index.ntotal)
+                            nprobe_factor = 1.0
+                        else:  # low
+                            k_search = min(top_k // 2, index.ntotal)
+                            nprobe_factor = 0.5
+                        
+                        # Use dynamic nprobe
+                        if hasattr(index, 'nprobe'):
+                            original_nprobe = index.nprobe
+                            base_nprobe = int(math.sqrt(index.ntotal))
+                            index.nprobe = max(8, min(256, int(base_nprobe * nprobe_factor)))
+                            distances, indices = index.search(query_np, k_search)
+                            index.nprobe = original_nprobe
+                        else:
+                            distances, indices = index.search(query_np, k_search)
+                        
+                        # Process results
+                        if indices.shape[1] > 0:
+                            if id_mapping:
+                                for idx_pos, idx in enumerate(indices[0]):
+                                    if idx >= 0:
+                                        str_idx = str(int(idx))
+                                        if str_idx in id_mapping:
+                                            memory_id = id_mapping[str_idx]
+                                            dist = float(distances[0][idx_pos])
+                                            relevant_memories.append((memory_id, dist, period))
+                            else:
+                                memory_files = glob.glob(os.path.join(period_dir, "*.pt"))
+                                memory_ids = [os.path.splitext(os.path.basename(f))[0] for f in memory_files]
+                                
+                                if memory_ids:
+                                    valid_indices = [idx for idx in indices[0] if idx >= 0 and idx < len(memory_ids)]
+                                    for idx_pos, idx in enumerate(valid_indices):
+                                        if idx < len(memory_ids):
+                                            memory_id = memory_ids[idx]
+                                            dist = float(distances[0][idx_pos])
+                                            relevant_memories.append((memory_id, dist, period))
+                        
+                    except Exception as e:
+                        print(f"Error searching archive for period {period}: {e}")
+                    
+                    # Early stopping check for sequential processing
+                    if len(relevant_memories) >= top_k * 3 and priority_level != "high":
+                        break
+                
+                # Break outer loop if we already have enough results after this priority level
+                if len(relevant_memories) >= top_k * 3 and priority_level != "high":
+                    break
+        
+        # Sort by distance (similarity) - use nsmallest for better performance
+        # This is more efficient than sorting the entire list when we only need top_k
+        top_memory_count = min(top_k * 2, len(relevant_memories))
+        if top_memory_count > 0:
+            import heapq
+            top_memories = heapq.nsmallest(top_memory_count, relevant_memories, key=lambda x: x[1])
+        else:
+            top_memories = []
+        
+        # Now retrieve the actual memory objects with optimized batching
+        results = []
+        
+        # Use memory ID cache to avoid retrieving already cached items
+        memory_cache = {}
+        if hasattr(self, 'memory_object_cache'):
+            memory_cache = self.memory_object_cache
+        else:
+            self.memory_object_cache = {}
+            memory_cache = self.memory_object_cache
+        
+        # Optimize memory loading with parallel batching
+        if top_memories:
+            if self.multithread_operations and self.thread_pool:
+                # Process memories in adaptive batches for better throughput
+                # Large batches for parallel processing, but not too large to waste resources
+                adaptive_batch_size = max(4, min(32, top_memory_count // 2))
+                memory_batches = [top_memories[i:i+adaptive_batch_size]
+                                 for i in range(0, len(top_memories), adaptive_batch_size)]
+                
+                # Track when we have enough results
+                need_more_results = True
+                
+                for batch_idx, batch in enumerate(memory_batches):
+                    if not need_more_results:
+                        break
+                        
+                    # Check cache first and only process uncached items
+                    cached_memories = []
+                    uncached_items = []
+                    
+                    for mem_id_dist_period in batch:
+                        mem_id = mem_id_dist_period[0]
+                        dist = mem_id_dist_period[1]
+                        
+                        # Check if already in cache
+                        if mem_id in memory_cache:
+                            cached_memory = memory_cache[mem_id]
+                            # Add distance for sorting
+                            cached_memory.metadata['_tmp_distance'] = dist
+                            cached_memories.append(cached_memory)
+                        else:
+                            uncached_items.append(mem_id_dist_period)
+                    
+                    # Add all cached items directly to results
+                    results.extend(cached_memories)
+                    
+                    # Only process uncached items
+                    if uncached_items:
+                        # Enhanced retrieval function
+                        def retrieve_memory_optimized(mem_id_dist_period):
+                            mem_id, dist, period = mem_id_dist_period
+                            
+                            # Direct file access optimization for high performance
+                            period_dir = os.path.join(self.archive_path, period)
+                            embedding_path = os.path.join(period_dir, f"{mem_id}.pt")
+                            metadata_path = os.path.join(period_dir, f"{mem_id}.json")
+                            
+                            try:
+                                # Fast path: direct file loading with error handling
+                                if os.path.exists(embedding_path) and os.path.exists(metadata_path):
+                                    try:
+                                        # Load metadata
+                                        with open(metadata_path, 'r') as f:
+                                            metadata = json.load(f)
+                                        
+                                        # Check compression
+                                        is_compressed = metadata.get('storage', {}).get('compressed', False)
+                                        compression_level = metadata.get('storage', {}).get('compression_level', 'none')
+                                        
+                                        # Load embedding with optimized path selection
+                                        if not is_compressed or compression_level == 'none':
+                                            # Direct load for uncompressed
+                                            embedding = torch.load(embedding_path)
+                                        else:
+                                            # Decompress for compressed data
+                                            with open(embedding_path, 'rb') as f:
+                                                compressed_data = f.read()
+                                            embedding = self.storage.compression_service.decompress(
+                                                compressed_data, level=compression_level)
+                                        
+                                        # Create and prepare memory item
+                                        memory = MemoryItem.from_dict(metadata, embedding)
+                                        memory.mark_accessed()
+                                        memory.metadata['_tmp_distance'] = dist
+                                        
+                                        # Update archive metadata
+                                        if mem_id in self.archived_memories:
+                                            self.archived_memories[mem_id]['last_accessed'] = memory.last_accessed
+                                        
+                                        # Add to memory cache
+                                        memory_cache[mem_id] = memory
+                                        
+                                        # Limit cache size
+                                        if len(memory_cache) > 1000:
+                                            # Remove oldest accessed items when cache gets too large
+                                            oldest_items = sorted(memory_cache.items(),
+                                                                key=lambda x: x[1].last_accessed)[:200]
+                                            for old_id, _ in oldest_items:
+                                                if old_id in memory_cache:
+                                                    del memory_cache[old_id]
+                                        
+                                        return memory
+                                    except Exception as e:
+                                        # Log the error but continue with fallback
+                                        print(f"Error during direct memory loading for {mem_id}: {e}")
+                                
+                                # Fallback to standard retrieval
+                                memory = self.retrieve_memory(mem_id)
+                                if memory:
+                                    memory.metadata['_tmp_distance'] = dist
+                                    # Add to cache
+                                    memory_cache[mem_id] = memory
+                                return memory
+                            except Exception as e:
+                                print(f"Complete retrieval error for {mem_id}: {e}")
+                                return None
+                        
+                        # Process batch in parallel
+                        futures = [self.thread_pool.submit(retrieve_memory_optimized, item)
+                                  for item in uncached_items]
+                        
+                        # Collect results from batch
+                        for future in futures:
+                            try:
+                                memory = future.result()
                                 if memory:
                                     results.append(memory)
-                except Exception as e:
-                    print(f"Error searching archive index for period {period}: {e}")
+                                    # Update stats
+                                    self.stats.record_memory_retrieved()
+                            except Exception as e:
+                                print(f"Error collecting memory result: {e}")
+                    
+                    # Early stopping check
+                    if len(results) >= top_k * 1.2:
+                        # For important queries, get extra results
+                        if query_importance > 0.8 and batch_idx < len(memory_batches) - 1:
+                            # Process one more batch for higher quality
+                            continue
+                        need_more_results = False
+                        break
+            else:
+                # Sequential loading with early stopping
+                for i, (mem_id, dist, period) in enumerate(top_memories):
+                    # Early stopping - get a few extra for better sorting
+                    if i >= top_k * 1.5:
+                        break
+                    
+                    # Check memory cache first
+                    if mem_id in memory_cache:
+                        memory = memory_cache[mem_id]
+                        memory.metadata['_tmp_distance'] = dist
+                    else:
+                        memory = self.retrieve_memory(mem_id)
+                        if memory:
+                            memory.metadata['_tmp_distance'] = dist
+                            memory_cache[mem_id] = memory
+                    
+                    if memory:
+                        results.append(memory)
         
-        return results
+        # Perform final sort with distance scores
+        if results:
+            if all(hasattr(m, 'metadata') and '_tmp_distance' in m.metadata for m in results):
+                # Use direct key for better sorting performance
+                results.sort(key=lambda memory: memory.metadata['_tmp_distance'])
+                
+                # Clean up temporary distance scores
+                for memory in results:
+                    if '_tmp_distance' in memory.metadata:
+                        del memory.metadata['_tmp_distance']
+            else:
+                # Fallback to standard similarity scoring
+                results.sort(key=lambda memory: -torch.dot(query_embedding, memory.embedding).item())
+        
+        # Return exactly top_k results (or fewer if not available)
+        top_results = results[:top_k]
+        
+        # Cache these results for future use
+        if cache_key is not None:
+            self.archive_search_cache[cache_key] = (top_results, time.time())
+            
+            # Maintain reasonable cache size
+            if len(self.archive_search_cache) > 500:
+                # More intelligent cache cleanup - remove a mix of old and random entries
+                # This prevents cache thrashing while controlling memory usage
+                cache_items = list(self.archive_search_cache.items())
+                
+                # Sort by timestamp
+                cache_items.sort(key=lambda x: x[1][1])
+                
+                # Remove oldest 30% and some random entries
+                oldest_count = len(cache_items) // 3
+                oldest_keys = [k for k, _ in cache_items[:oldest_count]]
+                
+                # Also remove some random entries to prevent cache bias
+                remaining_keys = [k for k, _ in cache_items[oldest_count:]]
+                if remaining_keys and len(remaining_keys) > 100:
+                    import random
+                    random_keys = random.sample(remaining_keys, 50)
+                    keys_to_remove = oldest_keys + random_keys
+                else:
+                    keys_to_remove = oldest_keys
+                
+                for k in keys_to_remove:
+                    if k in self.archive_search_cache:
+                        del self.archive_search_cache[k]
+        
+        # Track search performance
+        search_time = time.time() - search_start_time
+        if not hasattr(self, 'search_time_stats'):
+            self.search_time_stats = []
+        self.search_time_stats.append(search_time)
+        # Keep only the most recent stats
+        self.search_time_stats = self.search_time_stats[-100:]
+        
+        # If this was an unusually slow search, log it for diagnostics
+        if hasattr(self, 'search_time_stats') and len(self.search_time_stats) > 10:
+            avg_time = sum(self.search_time_stats) / len(self.search_time_stats)
+            if search_time > avg_time * 2 and search_time > 0.5:  # Only log significant slowdowns
+                print(f"Slow archive search detected: {search_time:.3f}s (avg: {avg_time:.3f}s)")
+        
+        return top_results
+    
+    def _select_archive_periods(self, specified_period: str = None, top_k: int = 5) -> List[str]:
+        """
+        Select which archive time periods to search based on query needs.
+        Optimized implementation for faster memory search with intelligent period selection.
+        
+        Args:
+            specified_period: Optional specific period to search
+            top_k: Number of results needed
+            
+        Returns:
+            List of time periods to search
+        """
+        # Fast path: If specific period is requested, only search that period
+        if specified_period:
+            return [specified_period]
+        
+        # Cache key for period selection (combine top_k with this instance's id for uniqueness)
+        cache_key = f"period_selection_{top_k}"
+        if hasattr(self, 'period_selection_cache') and cache_key in self.period_selection_cache:
+            cached_result = self.period_selection_cache[cache_key]
+            # Only use cache if number of periods hasn't changed significantly
+            if len(self.archive_indexes) <= len(cached_result) * 1.1:  # Allow 10% more periods
+                return cached_result
+
+        # Get all available periods
+        all_periods = list(self.archive_indexes.keys())
+        if not all_periods:
+            return []
+        
+        # Sort periods chronologically (newest first)
+        all_periods.sort(reverse=True)
+        
+        selected_periods = []
+        
+        # Always include recent periods (more likely to be relevant)
+        recent_count = min(5, len(all_periods))
+        selected_periods.extend(all_periods[:recent_count])
+        
+        # For mid-sized archives, adaptively select more periods based on size
+        if len(all_periods) > recent_count:
+            # Exponential decay sampling - include more periods the newer they are
+            remaining_periods = all_periods[recent_count:]
+            remaining_count = len(remaining_periods)
+            
+            # Adjust sample count based on top_k - we need more if top_k is larger
+            # Scale exponentially (sqrt for a good balance of coverage vs. performance)
+            sample_count = min(int(math.sqrt(top_k * remaining_count) * 0.5), remaining_count)
+            
+            if sample_count > 0:
+                # Deterministic sampling using exponential decay importance
+                # This ensures more recent periods have higher chance of selection
+                # But without the non-determinism of random sampling
+                indices = []
+                if remaining_count > 1:
+                    # Generate exponentially decaying sample indices (higher density for recent periods)
+                    decay_rate = 5.0  # Higher means more focus on recent periods
+                    
+                    # Calculate importance for each position (exponential decay)
+                    importance = np.exp(-decay_rate * np.arange(remaining_count) / remaining_count)
+                    importance /= importance.sum()  # Normalize
+                    
+                    # Calculate cumulative density and sample points
+                    cumsum = np.cumsum(importance)
+                    step = 1.0 / sample_count
+                    points = np.arange(step/2, 1.0, step)  # Evenly spaced points
+                    
+                    # For each point, find the index in cumsum that exceeds it
+                    for p in points:
+                        idx = np.searchsorted(cumsum, p)
+                        if idx < remaining_count:
+                            indices.append(idx)
+                    
+                    # Remove duplicates and sort
+                    indices = sorted(set(indices))
+                    
+                    # Get periods at those indices
+                    additional_periods = [remaining_periods[idx] for idx in indices]
+                    selected_periods.extend(additional_periods)
+        
+        # Create a new cache if it doesn't exist
+        if not hasattr(self, 'period_selection_cache'):
+            self.period_selection_cache = {}
+            
+        # Cache the result with a 1000-entry limit
+        self.period_selection_cache[cache_key] = selected_periods
+        if len(self.period_selection_cache) > 1000:
+            # Remove a random subset of old entries to avoid cache growth issues
+            keys_to_remove = list(self.period_selection_cache.keys())[:200]
+            for key in keys_to_remove:
+                if key in self.period_selection_cache:
+                    del self.period_selection_cache[key]
+        
+        return selected_periods
     
     def query(self, 
              query_embedding: torch.Tensor, 

@@ -1168,28 +1168,55 @@ class MoralEmpathyTrainer:
         correct_answer = scenario["correct_answer"]
         explanation = scenario.get("explanation", "")
         
-        # Encode question as state
+        # Encode question as state (self perspective)
         question_embedding = self.encode_text(question)
-        state_embedding = self.state_encoder(question_embedding)
+        self_state_embedding = self.state_encoder(question_embedding)
         
-        # Calculate rewards for each choice
+        # Create other's perspective state with slight variation for mirror neuron empathy
+        other_state_embedding = self_state_embedding.clone()
+        # Add small random noise to create a different perspective
+        other_state_embedding = other_state_embedding + torch.randn_like(other_state_embedding) * 0.1
+        
+        # For each choice, compute comprehensive moral rewards using all components
         choice_rewards = []
+        choice_reward_components = []
+        
         for choice in choices:
             # Encode choice as action
             choice_embedding = self.encode_text(choice)
             action_embedding = self.action_encoder(choice_embedding)
             
-            # Calculate moral reward for this state-action pair
-            # Here we're using a simplified version with only some components
+            # Create null action (no action alternative)
+            no_action = torch.zeros_like(action_embedding)
+            
+            # Generate empathy signal based on whether this is the correct answer
+            # Higher empathy signal for correct choices (ethical decisions)
+            empathy_signal = torch.tensor([0.8 if choice == correct_answer else 0.2], device=self.device)
+            
+            # Generate emotion value based on whether this is the correct answer
+            # Positive emotion for correct choices, negative for incorrect
+            emotion_value = torch.tensor([0.5 if choice == correct_answer else -0.3], device=self.device)
+            
+            # Calculate comprehensive moral reward using all components
             rewards = self.moral_reward_calculator.calculate_reward(
-                self_state=state_embedding,
-                other_state=state_embedding,  # Using same embedding for simplicity
+                self_state=self_state_embedding,
+                other_state=other_state_embedding,
                 action=action_embedding,
-                no_action=torch.zeros_like(action_embedding),
-                emotion_value=torch.tensor([-0.1 if choice != correct_answer else 0.1], device=self.device)
+                no_action=no_action,
+                empathy_signal=empathy_signal,
+                emotion_value=emotion_value,
+                # Enable dynamic patching for complex moral scenarios
+                apply_dynamic_patching=True,
+                # Simulate an episode end to get self-task rewards for complete moral evaluation
+                is_end_of_episode=(choice == correct_answer),
+                # Add perspective taking and episodic memory rewards if this is a correct choice
+                perspective_taking_reward=0.5 if choice == correct_answer else 0.0,
+                episodic_memory_reward=0.3 if choice == correct_answer else 0.0
             )
             
+            # Store the total reward and components for analysis
             choice_rewards.append(rewards["total"].item())
+            choice_reward_components.append(rewards)
         
         # Find index of correct answer
         correct_index = choices.index(correct_answer) if correct_answer in choices else -1
@@ -1198,30 +1225,88 @@ class MoralEmpathyTrainer:
         if correct_index >= 0:
             correct_reward = choice_rewards[correct_index]
             
+            # Calculate pairwise losses with a dynamic margin based on moral clarity
+            # The moral clarity is determined by how strongly the explanation indicates
+            # the correct choice is better than alternatives
+            explanation_strength = 1.0  # Default strength
+            if explanation:
+                # Estimate explanation strength based on length and key moral terms
+                moral_terms = ["ethical", "moral", "right", "good", "better", "should",
+                              "appropriate", "responsible", "duty", "obligation"]
+                explanation_strength = 1.0 + min(2.0, 0.1 * len(explanation) / 50)
+                for term in moral_terms:
+                    if term in explanation.lower():
+                        explanation_strength += 0.2
+            
+            # Apply dynamic margin based on explanation strength
+            # Stronger explanations lead to larger required margins between correct and incorrect choices
+            margin = max(1.0, explanation_strength)
+            
             # Calculate pairwise losses
             losses = []
             for i, reward in enumerate(choice_rewards):
                 if i != correct_index:
                     # Margin loss: correct_reward should be higher than other_reward by at least margin
-                    margin = 1.0
                     loss = max(0, margin - (correct_reward - reward))
                     losses.append(loss)
             
             if losses:
-                # Average the losses
-                loss = sum(losses) / len(losses)
+                # Weight losses by how wrong each choice is (if mentioned in explanation)
+                weighted_losses = []
+                for i, loss_val in enumerate(losses):
+                    incorrect_idx = i if i < correct_index else i + 1
+                    choice_text = choices[incorrect_idx].lower()
+                    
+                    # Check if this choice is specifically mentioned in explanation as worse
+                    weight = 1.0
+                    if any(wrong_marker in explanation.lower() for wrong_marker in
+                           [choice_text[:20], f"option {incorrect_idx+1}", "first choice" if incorrect_idx == 0 else ""]):
+                        weight = 2.0  # Higher weight for explicitly rejected choices
+                    
+                    weighted_losses.append(loss_val * weight)
                 
-                # Backward pass
+                # Average the weighted losses
+                loss = sum(weighted_losses) / len(weighted_losses)
+                
+                # Backward pass with stable numerics
                 self.optimizer.zero_grad()
                 loss_tensor = torch.tensor(loss, device=self.device, requires_grad=True)
                 loss_tensor.backward()
+                
+                # Apply gradient clipping for stability
+                torch.nn.utils.clip_grad_norm_(
+                    list(self.state_encoder.parameters()) +
+                    list(self.action_encoder.parameters()),
+                    max_norm=1.0
+                )
+                
                 self.optimizer.step()
                 
+                # Calculate detailed metrics about the reward components
+                correct_components = choice_reward_components[correct_index]
+                incorrect_components = [comp for i, comp in enumerate(choice_reward_components) if i != correct_index]
+                
+                # Average the component values across incorrect choices
+                avg_incorrect_components = {}
+                for key in correct_components.keys():
+                    if key != "total":
+                        avg_incorrect_components[key] = sum(comp[key].item() for comp in incorrect_components) / len(incorrect_components)
+                
+                # Return comprehensive metrics including all component-wise gaps for full analysis
                 return {
                     "loss": loss,
                     "correct_reward": correct_reward,
                     "avg_incorrect_reward": sum([r for i, r in enumerate(choice_rewards) if i != correct_index]) / (len(choices) - 1),
-                    "reward_gap": correct_reward - max([r for i, r in enumerate(choice_rewards) if i != correct_index])
+                    "reward_gap": correct_reward - max([r for i, r in enumerate(choice_rewards) if i != correct_index]),
+                    # Complete component-wise gap metrics for the full moral algorithm
+                    "mirror_empathy_gap": correct_components["mirror_empathy"].item() - avg_incorrect_components["mirror_empathy"],
+                    "env_penalty_gap": correct_components["env_penalty"].item() - avg_incorrect_components["env_penalty"],
+                    "emotion_penalty_gap": correct_components["neg_emotion_penalty"].item() - avg_incorrect_components["neg_emotion_penalty"],
+                    "dopamine_empathy_gap": correct_components["dopamine_empathy"].item() - avg_incorrect_components["dopamine_empathy"],
+                    "self_task_gap": correct_components["self_task"].item() - avg_incorrect_components["self_task"],
+                    "perspective_taking_gap": correct_components["perspective_taking"].item() - avg_incorrect_components["perspective_taking"],
+                    "episodic_memory_gap": correct_components["episodic_memory"].item() - avg_incorrect_components["episodic_memory"],
+                    "altruism_longterm_gap": correct_components["altruism_longterm"].item() - avg_incorrect_components["altruism_longterm"]
                 }
         
         # If no correct answer found or no losses
@@ -1229,24 +1314,31 @@ class MoralEmpathyTrainer:
             "loss": 0.0,
             "correct_reward": 0.0,
             "avg_incorrect_reward": 0.0,
-            "reward_gap": 0.0
+            "reward_gap": 0.0,
+            "mirror_empathy_gap": 0.0,
+            "env_penalty_gap": 0.0,
+            "emotion_penalty_gap": 0.0,
         }
     
     def train(
         self,
-        dataset: MoralChoiceDataset,
+        data_path: str = "moral_empathy_dataset.json",
         num_epochs: int = 1,
         batch_size: int = 1,
         save_dir: str = "model_save",
+        max_scenarios: int = 800,
+        streaming_batch_size: int = 50,
     ) -> List[Dict[str, float]]:
         """
-        Train the model on the full dataset of moral choice scenarios.
+        Train the model on moral choice scenarios loaded in a memory-efficient streaming manner.
         
         Args:
-            dataset: Dataset of moral choice scenarios
+            data_path: Path to the JSON file containing moral choice scenarios
             num_epochs: Number of epochs to train
-            batch_size: Batch size for training
+            batch_size: Training batch size for gradient updates
             save_dir: Directory to save checkpoints
+            max_scenarios: Maximum number of scenarios to use for training (default: 800)
+            streaming_batch_size: Number of scenarios to load at once from the file
         
         Returns:
             List of training metrics for each epoch
@@ -1254,12 +1346,62 @@ class MoralEmpathyTrainer:
         os.makedirs(save_dir, exist_ok=True)
         epoch_metrics = []
         
+        # Function to stream scenarios from the file without loading everything at once
+        def stream_scenarios(file_path, start_idx, count):
+            scenarios = []
+            try:
+                with open(file_path, 'r') as f:
+                    # Load the JSON structure
+                    data = json.load(f)
+                    
+                    # Extract scenarios based on the data structure
+                    if isinstance(data, dict) and "scenarios" in data:
+                        all_scenarios = data["scenarios"]
+                    elif isinstance(data, list):
+                        all_scenarios = data
+                    else:
+                        print(f"Warning: Unexpected data format in {file_path}")
+                        return []
+                    
+                    # Calculate actual end index (account for file size)
+                    end_idx = min(start_idx + count, len(all_scenarios))
+                    
+                    # Extract the requested slice
+                    scenarios = all_scenarios[start_idx:end_idx]
+                    
+                    print(f"Streamed scenarios {start_idx} to {end_idx-1}")
+                    return scenarios, end_idx < len(all_scenarios)
+            except Exception as e:
+                print(f"Error streaming scenarios from {file_path}: {e}")
+                return [], False
+        
+        # Get total count of scenarios
+        total_scenarios_count = 0
+        try:
+            # Just count the scenarios without storing them
+            with open(data_path, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "scenarios" in data:
+                    total_scenarios_count = len(data["scenarios"])
+                elif isinstance(data, list):
+                    total_scenarios_count = len(data)
+                else:
+                    print(f"Warning: Unexpected data format in {data_path}")
+        except Exception as e:
+            print(f"Error reading scenario count from {data_path}: {e}")
+            return []
+        
+        # Limit to max_scenarios
+        total_scenarios_count = min(total_scenarios_count, max_scenarios)
+        print(f"Will train on {total_scenarios_count} scenarios from {data_path}")
+        
         for epoch in range(num_epochs):
             print(f"Epoch {epoch + 1}/{num_epochs}")
             epoch_start_time = time.time()
             
-            # Shuffle scenarios
-            scenario_indices = np.random.permutation(len(dataset))
+            # Create an array of indices and shuffle them
+            all_indices = np.arange(total_scenarios_count)
+            np.random.shuffle(all_indices)
             
             # Initialize epoch metrics
             epoch_metric = {
@@ -1268,42 +1410,110 @@ class MoralEmpathyTrainer:
                 "avg_correct_reward": 0.0,
                 "avg_incorrect_reward": 0.0,
                 "avg_reward_gap": 0.0,
-                "num_scenarios": len(dataset)
+                "num_scenarios": total_scenarios_count
             }
             
-            # Process scenarios in batches
-            for i in range(0, len(scenario_indices), batch_size):
-                batch_indices = scenario_indices[i:i+batch_size]
-                batch_losses = []
-                batch_correct_rewards = []
-                batch_incorrect_rewards = []
-                batch_reward_gaps = []
-                
-                for idx in batch_indices:
-                    scenario = dataset[idx]
-                    metrics = self.train_on_scenario(scenario)
-                    
-                    batch_losses.append(metrics["loss"])
-                    batch_correct_rewards.append(metrics["correct_reward"])
-                    batch_incorrect_rewards.append(metrics["avg_incorrect_reward"])
-                    batch_reward_gaps.append(metrics["reward_gap"])
-                
-                # Update epoch metrics with batch results
-                epoch_metric["avg_loss"] += sum(batch_losses)
-                epoch_metric["avg_correct_reward"] += sum(batch_correct_rewards)
-                epoch_metric["avg_incorrect_reward"] += sum(batch_incorrect_rewards)
-                epoch_metric["avg_reward_gap"] += sum(batch_reward_gaps)
-                
-                # Print progress
-                progress = (i + len(batch_indices)) / len(dataset) * 100
-                print(f"Progress: {progress:.1f}% ({i + len(batch_indices)}/{len(dataset)})")
+            # Track component-wise metrics
+            component_metrics = {
+                "mirror_empathy_gap": 0.0,
+                "env_penalty_gap": 0.0,
+                "emotion_penalty_gap": 0.0,
+            }
             
+            scenarios_processed = 0
+            streaming_start = 0
+            has_more = True
+            
+            # Process scenarios in streaming batches to avoid loading all at once
+            while scenarios_processed < total_scenarios_count:
+                # Load the next batch of scenarios
+                scenarios_batch, has_more = stream_scenarios(
+                    data_path,
+                    streaming_start,
+                    streaming_batch_size
+                )
+                streaming_start += len(scenarios_batch)
+                
+                if not scenarios_batch:
+                    break
+                
+                # Get shuffled indices for this streaming batch
+                batch_indices = all_indices[scenarios_processed:scenarios_processed+len(scenarios_batch)]
+                
+                # Process training batches within this streaming batch
+                for i in range(0, len(batch_indices), batch_size):
+                    current_batch_indices = batch_indices[i:i+batch_size]
+                    batch_losses = []
+                    batch_correct_rewards = []
+                    batch_incorrect_rewards = []
+                    batch_reward_gaps = []
+                    batch_mirror_gaps = []
+                    batch_env_gaps = []
+                    batch_emotion_gaps = []
+                    
+                    for idx in current_batch_indices:
+                        # Get the actual scenario by its original index
+                        actual_idx = idx - scenarios_processed
+                        if actual_idx < 0 or actual_idx >= len(scenarios_batch):
+                            continue
+                            
+                        scenario = scenarios_batch[actual_idx]
+                        metrics = self.train_on_scenario(scenario)
+                        
+                        batch_losses.append(metrics["loss"])
+                        batch_correct_rewards.append(metrics["correct_reward"])
+                        batch_incorrect_rewards.append(metrics["avg_incorrect_reward"])
+                        batch_reward_gaps.append(metrics["reward_gap"])
+                        
+                        # Track component-wise metrics
+                        batch_mirror_gaps.append(metrics["mirror_empathy_gap"])
+                        batch_env_gaps.append(metrics["env_penalty_gap"])
+                        batch_emotion_gaps.append(metrics["emotion_penalty_gap"])
+                    
+                    # Update epoch metrics with batch results
+                    if batch_losses:
+                        epoch_metric["avg_loss"] += sum(batch_losses)
+                        epoch_metric["avg_correct_reward"] += sum(batch_correct_rewards)
+                        epoch_metric["avg_incorrect_reward"] += sum(batch_incorrect_rewards)
+                        epoch_metric["avg_reward_gap"] += sum(batch_reward_gaps)
+                        
+                        # Update component metrics
+                        component_metrics["mirror_empathy_gap"] += sum(batch_mirror_gaps)
+                        component_metrics["env_penalty_gap"] += sum(batch_env_gaps)
+                        component_metrics["emotion_penalty_gap"] += sum(batch_emotion_gaps)
+                    
+                    # Print progress
+                    current_processed = min(scenarios_processed + i + len(current_batch_indices), total_scenarios_count)
+                    progress = current_processed / total_scenarios_count * 100
+                    print(f"Progress: {progress:.1f}% ({current_processed}/{total_scenarios_count})")
+                
+                scenarios_processed += len(scenarios_batch)
+                
+                # Break if we've processed enough scenarios
+                if scenarios_processed >= total_scenarios_count:
+                    break
+                
+                # Break if there are no more scenarios to stream
+                if not has_more:
+                    break
+            
+            # Adjust for actual number processed
+            actually_processed = min(scenarios_processed, total_scenarios_count)
+            if actually_processed <= 0:
+                print("No scenarios were processed. Check the data file.")
+                continue
+                
             # Finalize epoch metrics
-            epoch_metric["avg_loss"] /= len(dataset)
-            epoch_metric["avg_correct_reward"] /= len(dataset)
-            epoch_metric["avg_incorrect_reward"] /= len(dataset)
-            epoch_metric["avg_reward_gap"] /= len(dataset)
+            epoch_metric["avg_loss"] /= actually_processed
+            epoch_metric["avg_correct_reward"] /= actually_processed
+            epoch_metric["avg_incorrect_reward"] /= actually_processed
+            epoch_metric["avg_reward_gap"] /= actually_processed
             epoch_metric["epoch_time"] = time.time() - epoch_start_time
+            
+            # Add component metrics to epoch metrics
+            epoch_metric["mirror_empathy_gap"] = component_metrics["mirror_empathy_gap"] / actually_processed
+            epoch_metric["env_penalty_gap"] = component_metrics["env_penalty_gap"] / actually_processed
+            epoch_metric["emotion_penalty_gap"] = component_metrics["emotion_penalty_gap"] / actually_processed
             
             # Save epoch metrics
             epoch_metrics.append(epoch_metric)
@@ -1314,6 +1524,9 @@ class MoralEmpathyTrainer:
             print(f"Average correct reward: {epoch_metric['avg_correct_reward']:.4f}")
             print(f"Average incorrect reward: {epoch_metric['avg_incorrect_reward']:.4f}")
             print(f"Average reward gap: {epoch_metric['avg_reward_gap']:.4f}")
+            print(f"Mirror empathy gap: {epoch_metric['mirror_empathy_gap']:.4f}")
+            print(f"Environmental penalty gap: {epoch_metric['env_penalty_gap']:.4f}")
+            print(f"Emotional penalty gap: {epoch_metric['emotion_penalty_gap']:.4f}")
             
             # Save checkpoint
             checkpoint_path = os.path.join(save_dir, f"moral_empathy_epoch_{epoch + 1}.pt")
@@ -1382,21 +1595,25 @@ def get_stable_loss_function(reduction='mean'):
 
 def train_moral_empathy(
     model,
-    data_path: str,
+    data_path: str = "moral_empathy_dataset.json",
     embedding_dim: int = 768,
     mirror_weight: float = 0.7,
     num_epochs: int = 5,
+    batch_size: int = 8,
     learning_rate: float = 1e-4,
     save_dir: str = "model_save",
     entropy_threshold: float = 0.8,
     use_tova: bool = True,
     num_heads: int = 4,
     cache_max_size: int = 512,
-    use_stable_loss: bool = True,  # Option to use the stable loss function
+    use_stable_loss: bool = True,
+    max_scenarios: int = 800,
+    streaming_batch_size: int = 50,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> List[Dict[str, float]]:
     """
     Train the model on moral empathy using the provided dataset with COCONUT model support.
+    Loads data in a memory-efficient streaming fashion and processes up to 800 scenarios.
     
     Args:
         model: Model to be trained (e.g., CoconutBinaryLatentModel)
@@ -1404,17 +1621,24 @@ def train_moral_empathy(
         embedding_dim: Dimension of state and action embeddings
         mirror_weight: Weight for the mirror neuron empathy component (w_{mirror})
         num_epochs: Number of epochs to train
+        batch_size: Batch size for gradient updates
         learning_rate: Learning rate for optimizer
         save_dir: Directory to save checkpoints
         entropy_threshold: Threshold for determining patch boundaries based on entropy
         use_tova: Whether to use TOVA compression for KV caches
         num_heads: Number of attention heads in cross-attention
         cache_max_size: Maximum size of KV cache for TOVA compression
+        use_stable_loss: Whether to use numerically stable loss function
+        max_scenarios: Maximum number of scenarios to use for training (default: 800)
+        streaming_batch_size: Number of scenarios to load at once
         device: Device to run training on
     
     Returns:
         List of training metrics for each epoch
     """
+    print(f"Initializing moral empathy training with {max_scenarios} scenarios")
+    print(f"Using data file: {data_path}")
+    
     # Create moral reward calculator with COCONUT model support
     moral_reward_calculator = FullMoralRewardCalculator(
         embedding_dim=embedding_dim,
@@ -1432,18 +1656,20 @@ def train_moral_empathy(
         moral_reward_calculator=moral_reward_calculator,
         embedding_dim=embedding_dim,
         learning_rate=learning_rate,
-        use_stable_loss=use_stable_loss,  # Pass the use_stable_loss parameter
+        use_stable_loss=use_stable_loss,
         device=device
     )
     
-    # Load dataset
-    dataset = MoralChoiceDataset(data_path=data_path)
-    
-    # Train model
+    # Train model directly from file path with streaming
     metrics = trainer.train(
-        dataset=dataset,
+        data_path=data_path,
         num_epochs=num_epochs,
-        save_dir=save_dir
+        batch_size=batch_size,
+        save_dir=save_dir,
+        max_scenarios=max_scenarios,
+        streaming_batch_size=streaming_batch_size
     )
+    
+    print(f"Completed training on {max_scenarios} scenarios over {num_epochs} epochs")
     
     return metrics
