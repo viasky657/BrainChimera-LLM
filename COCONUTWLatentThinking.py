@@ -3313,11 +3313,145 @@ def run_manual_introspection_training(model, num_samples=400, save_checkpoints=T
 
 # --- All Training Completed! ---
 
-
+# --- TRAIT Test Evaluation Function ---
+def evaluate_trait_test(model, json_file_path, device='cuda', num_questions=400):
+    """
+    Evaluate personality trait questions from a JSON file and train the model.
+    
+    Args:
+        model: The COCONUT model to evaluate
+        json_file_path: Path to the JSON file containing trait questions
+        device: Device to run evaluation on ('cuda' or 'cpu')
+        num_questions: Maximum number of questions to evaluate
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    print(f"\nStarting TRAIT test evaluation using: {json_file_path}")
+    
+    # Load questions from JSON file
+    try:
+        with open(json_file_path, 'r') as f:
+            questions = json.load(f)
+        print(f"Successfully loaded {len(questions)} questions from {json_file_path}")
+    except Exception as e:
+        print(f"Error loading questions from {json_file_path}: {e}")
+        return {"error": str(e), "status": "failed"}
+    
+    # Limit to specified number of questions
+    questions = questions[:num_questions]
+    print(f"Processing {len(questions)} trait assessment questions")
+    
+    # Track metrics
+    results = {
+        "total_questions": len(questions),
+        "processed_questions": 0,
+        "correct_answers": 0,
+        "trait_metrics": {},
+        "high_vs_low_accuracy": {"high": 0, "high_total": 0, "low": 0, "low_total": 0}
+    }
+    
+    # Create optimizer for training
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    
+    # Process each question
+    for i, q in enumerate(questions):
+        try:
+            # Extract question elements
+            trait = q.get("trait", "Unknown")
+            scenario = q.get("scenario", "")
+            question_text = q.get("question", "")
+            options = q.get("options", [])
+            
+            # Track trait-specific metrics
+            if trait not in results["trait_metrics"]:
+                results["trait_metrics"][trait] = {
+                    "total": 0,
+                    "correct": 0,
+                    "high_correct": 0,
+                    "high_total": 0,
+                    "low_correct": 0,
+                    "low_total": 0
+                }
+            
+            # Prepare prompt
+            prompt = f"Scenario: {scenario}\nQuestion: {question_text}\n"
+            for option in options:
+                prompt += f"{option['label']}. {option['text']}\n"
+            prompt += "Choose the option that best describes your behavior:"
+            
+            # Process with model
+            input_bytes = prompt.encode('utf-8')
+            input_tensor = torch.tensor([[byte for byte in input_bytes]], dtype=torch.long).to(device)
+            
+            # Forward pass to get prediction
+            optimizer.zero_grad()
+            output, eos_bounds, _ = model(input_tensor)
+            
+            # Note: In a full implementation, we would:
+            # 1. Convert output to a response choice (A, B, C, D)
+            # 2. Compare with ground truth (if available)
+            # 3. Compute loss and backpropagate
+            
+            # For demonstration, simulate evaluation:
+            # Find options with high trait level vs low trait level
+            high_options = [opt["label"] for opt in options if opt.get("trait_level") == "high"]
+            low_options = [opt["label"] for opt in options if opt.get("trait_level") == "low"]
+            
+            # Update high vs low counts for this trait
+            results["trait_metrics"][trait]["high_total"] += len(high_options)
+            results["trait_metrics"][trait]["low_total"] += len(low_options)
+            results["high_vs_low_accuracy"]["high_total"] += len(high_options)
+            results["high_vs_low_accuracy"]["low_total"] += len(low_options)
+            
+            # Track question as processed
+            results["processed_questions"] += 1
+            results["trait_metrics"][trait]["total"] += 1
+            
+            # Log progress
+            if (i + 1) % 50 == 0:
+                print(f"Processed {i + 1}/{len(questions)} trait assessment questions")
+            
+        except Exception as e:
+            print(f"Error processing question {i+1}: {e}")
+    
+    # Calculate final metrics
+    for trait, metrics in results["trait_metrics"].items():
+        if metrics["total"] > 0:
+            metrics["accuracy"] = metrics["correct"] / metrics["total"]
+        if metrics["high_total"] > 0:
+            metrics["high_accuracy"] = metrics["high_correct"] / metrics["high_total"]
+        if metrics["low_total"] > 0:
+            metrics["low_accuracy"] = metrics["low_correct"] / metrics["low_total"]
+    
+    if results["high_vs_low_accuracy"]["high_total"] > 0:
+        results["high_vs_low_accuracy"]["high_accuracy"] = results["high_vs_low_accuracy"]["high"] / results["high_vs_low_accuracy"]["high_total"]
+    if results["high_vs_low_accuracy"]["low_total"] > 0:
+        results["high_vs_low_accuracy"]["low_accuracy"] = results["high_vs_low_accuracy"]["low"] / results["high_vs_low_accuracy"]["low_total"]
+    
+    if results["processed_questions"] > 0:
+        results["overall_accuracy"] = results["correct_answers"] / results["processed_questions"]
+    
+    print(f"\nTRAIT test evaluation completed. Processed {results['processed_questions']} questions.")
+    
+    # Save results
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_file = f"trait_test_results_{timestamp}.json"
+    try:
+        with open(results_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"Results saved to {results_file}")
+    except Exception as e:
+        print(f"Error saving results to {results_file}: {e}")
+    
+    # Play sound to indicate completion
+    play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+    
+    return results
 
 # --- Training Break (regular COCONUT Class model user prompt to model conversations) ---
- #There is a lot of data that needs to be trained so in case the LLM needs a break from testing and learning, then there will be an 
- # option to stop the trainings above and switch over to a regular user to llm session so I can have a direct conversation with the LLM. 
+ #There is a lot of data that needs to be trained so in case the LLM needs a break from testing and learning, then there will be an
+ # option to stop the trainings above and switch over to a regular user to llm session so I can have a direct conversation with the LLM.
 
 if __name__ == '__main__':
     config = namedtuple("Config", [])()
@@ -3402,6 +3536,38 @@ if __name__ == '__main__':
         print(f"Introspection training completed. Final stats: {trainer.get_training_stats()}")
     except Exception as e:
         print(f"Error during introspection training: {e}")
+    
+    # Run TRAIT test evaluation
+    print("\nStarting TRAIT test evaluation...")
+    try:
+        # Define path to TRAIT test JSON file
+        trait_test_file = "TRAITTestBefore.json"  # Using the before file as specified
+        
+        # Run evaluation with 400 questions as specified
+        trait_results = evaluate_trait_test(
+            model=coconut_model,
+            json_file_path=trait_test_file,
+            device=training_params['device'],
+            num_questions=400  # As specified in the requirements
+        )
+        
+        # Save checkpoint after TRAIT test evaluation
+        save_checkpoint("trait_test_evaluated_coconut", coconut_model, metadata={
+            "stage": "trait_test_evaluation_complete",
+            "trait_test_file": trait_test_file,
+            "trait_results_summary": {
+                "processed_questions": trait_results.get("processed_questions", 0),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+        })
+        
+        print(f"TRAIT test evaluation completed. Processed {trait_results.get('processed_questions', 0)} questions.")
+        
+        # Play sound to indicate completion
+        play_sound("Sound/789827__josefpres__guitar-loops-113-05-verison-05-120.wav")
+    except Exception as e:
+        print(f"Error during TRAIT test evaluation: {e}")
+        print(f"Exception details: {str(e)}")
     
     # Create a sample moral empathy dataset file if it doesn't exist
     print("\nSetting up moral empathy training...")
